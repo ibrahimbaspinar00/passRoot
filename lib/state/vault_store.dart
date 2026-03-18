@@ -18,6 +18,12 @@ class VaultStore extends ChangeNotifier {
   static const String _storageKey = 'passroot_vault_records_v2';
 
   final List<VaultRecord> _records;
+  final Map<String, _DerivedPasswordData> _derivedPasswordCache =
+      <String, _DerivedPasswordData>{};
+  List<VaultRecord> _sortedCache = const <VaultRecord>[];
+  UnmodifiableListView<VaultRecord> _sortedView =
+      UnmodifiableListView<VaultRecord>(const <VaultRecord>[]);
+  bool _sortedCacheDirty = true;
 
   Future<void> _loadFromStorage() async {
     try {
@@ -40,6 +46,7 @@ class VaultStore extends ChangeNotifier {
       _records
         ..clear()
         ..addAll(loaded);
+      _sortedCacheDirty = true;
       notifyListeners();
     } catch (_) {
       // Keep in-memory seed when persisted data cannot be parsed.
@@ -64,14 +71,18 @@ class VaultStore extends ChangeNotifier {
       UnmodifiableListView<VaultRecord>(_records);
 
   List<VaultRecord> get sortedRecords {
-    final list = List<VaultRecord>.from(_records);
-    list.sort((a, b) {
-      if (a.isFavorite != b.isFavorite) {
-        return a.isFavorite ? -1 : 1;
-      }
-      return b.updatedAt.compareTo(a.updatedAt);
-    });
-    return list;
+    if (_sortedCacheDirty) {
+      _sortedCache = List<VaultRecord>.from(_records)
+        ..sort((a, b) {
+          if (a.isFavorite != b.isFavorite) {
+            return a.isFavorite ? -1 : 1;
+          }
+          return b.updatedAt.compareTo(a.updatedAt);
+        });
+      _sortedView = UnmodifiableListView<VaultRecord>(_sortedCache);
+      _sortedCacheDirty = false;
+    }
+    return _sortedView;
   }
 
   List<VaultRecord> recordsForCategory(RecordCategory category) {
@@ -84,18 +95,24 @@ class VaultStore extends ChangeNotifier {
     _records
       ..clear()
       ..addAll(records);
+    _sortedCacheDirty = true;
+    _derivedPasswordCache.clear();
     notifyListeners();
     _persistAsync();
   }
 
   void clearAllRecords() {
     _records.clear();
+    _sortedCacheDirty = true;
+    _derivedPasswordCache.clear();
     notifyListeners();
     _persistAsync();
   }
 
   void addRecord(VaultRecord record) {
     _records.add(record);
+    _sortedCacheDirty = true;
+    _derivedPasswordCache.remove(record.id);
     notifyListeners();
     _persistAsync();
   }
@@ -104,12 +121,16 @@ class VaultStore extends ChangeNotifier {
     final index = _records.indexWhere((record) => record.id == updated.id);
     if (index == -1) return;
     _records[index] = updated;
+    _sortedCacheDirty = true;
+    _derivedPasswordCache.remove(updated.id);
     notifyListeners();
     _persistAsync();
   }
 
   void deleteRecord(String id) {
     _records.removeWhere((record) => record.id == id);
+    _sortedCacheDirty = true;
+    _derivedPasswordCache.remove(id);
     notifyListeners();
     _persistAsync();
   }
@@ -121,8 +142,38 @@ class VaultStore extends ChangeNotifier {
       isFavorite: !_records[index].isFavorite,
       updatedAt: DateTime.now(),
     );
+    _sortedCacheDirty = true;
     notifyListeners();
     _persistAsync();
+  }
+
+  PasswordAnalysis analysisForRecord(VaultRecord record) {
+    return _derivePasswordData(record).analysis;
+  }
+
+  String maskedPasswordForRecord(VaultRecord record) {
+    return _derivePasswordData(record).maskedPassword;
+  }
+
+  _DerivedPasswordData _derivePasswordData(VaultRecord record) {
+    final cached = _derivedPasswordCache[record.id];
+    if (cached != null && cached.rawPassword == record.password) {
+      return cached;
+    }
+
+    final next = _DerivedPasswordData(
+      rawPassword: record.password,
+      analysis: analyzePassword(record.password),
+      maskedPassword: _maskPassword(record.password),
+    );
+    _derivedPasswordCache[record.id] = next;
+    return next;
+  }
+
+  String _maskPassword(String password) {
+    if (password.length <= 3) return '***';
+    final hiddenLength = password.length - 3;
+    return '${List.filled(hiddenLength, '*').join()}${password.substring(hiddenLength)}';
   }
 
   int get totalCount => _records.length;
@@ -231,4 +282,16 @@ class VaultStore extends ChangeNotifier {
       PasswordStrength.weak => const Color(0xFFDC2626),
     };
   }
+}
+
+class _DerivedPasswordData {
+  const _DerivedPasswordData({
+    required this.rawPassword,
+    required this.analysis,
+    required this.maskedPassword,
+  });
+
+  final String rawPassword;
+  final PasswordAnalysis analysis;
+  final String maskedPassword;
 }

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
 import '../utils/password_utils.dart';
 
@@ -12,33 +11,38 @@ class SecurityBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final (label, color) = switch (strength) {
+    final (label, textColor, backgroundColor, borderColor) = switch (strength) {
       PasswordStrength.strong => (
-          context.tr('Guclu', 'Strong'),
-          isDark ? const Color(0xFF56D49D) : const Color(0xFF1D8F62),
-        ),
+        context.tr('Guclu', 'Strong'),
+        isDark ? const Color(0xFF65E3AB) : const Color(0xFF166B47),
+        isDark ? const Color(0xFF1E3A32) : const Color(0xFFE4F7EC),
+        isDark ? const Color(0xFF336955) : const Color(0xFFC1E7D0),
+      ),
       PasswordStrength.medium => (
-          context.tr('Orta', 'Medium'),
-          isDark ? const Color(0xFFF0C66A) : const Color(0xFFCA8A04),
-        ),
+        context.tr('Orta', 'Medium'),
+        isDark ? const Color(0xFFF3CF79) : const Color(0xFF9A6500),
+        isDark ? const Color(0xFF40331B) : const Color(0xFFFFF3DD),
+        isDark ? const Color(0xFF66512C) : const Color(0xFFF2D7A0),
+      ),
       PasswordStrength.weak => (
-          context.tr('Zayif', 'Weak'),
-          isDark ? const Color(0xFFF29A9A) : const Color(0xFFDC2626),
-        ),
+        context.tr('Zayif', 'Weak'),
+        isDark ? const Color(0xFFF3ADB7) : const Color(0xFFB42335),
+        isDark ? const Color(0xFF4D2C33) : const Color(0xFFFDEBED),
+        isDark ? const Color(0xFF71434C) : const Color(0xFFF6CBD2),
+      ),
     };
-    final pr = context.pr;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
       decoration: BoxDecoration(
-        color: Color.alphaBlend(color.withValues(alpha: 0.16), pr.softFill),
+        color: backgroundColor,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.38)),
+        border: Border.all(color: borderColor),
       ),
       child: Text(
         label,
         style: TextStyle(
-          color: color,
+          color: textColor,
           fontWeight: FontWeight.w700,
           fontSize: 12,
         ),

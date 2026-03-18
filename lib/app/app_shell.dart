@@ -28,6 +28,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   late final VaultStore _store;
   late final BiometricService _biometricService;
+  late final List<Widget> _pages;
   int _index = 0;
   bool _locked = false;
   DateTime? _pausedAt;
@@ -40,6 +41,25 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _store = VaultStore();
     _biometricService = BiometricService();
+    _pages = <Widget>[
+      DashboardScreen(
+        key: const PageStorageKey<String>('dashboard-screen'),
+        store: _store,
+        onOpenDetail: _openSecurityDetail,
+      ),
+      VaultScreen(
+        key: const PageStorageKey<String>('vault-screen'),
+        store: _store,
+        settingsStore: widget.settingsStore,
+        onCreate: _openCreateRecord,
+        onEdit: _openEditRecord,
+      ),
+      SettingsScreen(
+        key: const PageStorageKey<String>('settings-screen'),
+        store: _store,
+        settingsStore: widget.settingsStore,
+      ),
+    ];
     widget.settingsStore.addListener(_onSettingsChanged);
     if (widget.settingsStore.settings.appLockEnabled) {
       _locked = true;
@@ -268,16 +288,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final pr = context.pr;
-    final pages = <Widget>[
-      DashboardScreen(store: _store, onOpenDetail: _openSecurityDetail),
-      VaultScreen(
-        store: _store,
-        settingsStore: widget.settingsStore,
-        onCreate: _openCreateRecord,
-        onEdit: _openEditRecord,
-      ),
-      SettingsScreen(store: _store, settingsStore: widget.settingsStore),
-    ];
 
     return Scaffold(
       body: Listener(
@@ -294,7 +304,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           child: SafeArea(
             child: Stack(
               children: [
-                Positioned.fill(child: pages[_index]),
+                Positioned.fill(
+                  child: IndexedStack(index: _index, children: _pages),
+                ),
                 if (_locked)
                   Positioned.fill(
                     child: AppLockOverlay(

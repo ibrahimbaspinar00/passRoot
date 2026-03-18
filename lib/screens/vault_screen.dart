@@ -108,6 +108,7 @@ class _VaultScreenState extends State<VaultScreen>
   Widget build(BuildContext context) {
     super.build(context);
     final pr = context.pr;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final records = _records;
     final compact = _cardStyle == RecordCardStyle.compact;
 
@@ -147,7 +148,8 @@ class _VaultScreenState extends State<VaultScreen>
               builder: (context, constraints) {
                 final width = constraints.crossAxisExtent;
                 final useGrid = compact ? width >= 780 : width >= 920;
-                final spacing = compact ? 8.0 : 10.0;
+                final baseSpacing = compact ? 8.0 : 10.0;
+                final spacing = isDark ? baseSpacing : baseSpacing + 2;
 
                 if (!useGrid) {
                   return SliverList(
@@ -156,11 +158,17 @@ class _VaultScreenState extends State<VaultScreen>
                         final record = records[index];
                         final isLast = index == records.length - 1;
                         return Padding(
-                          padding: EdgeInsets.only(bottom: isLast ? 0 : spacing),
+                          padding: EdgeInsets.only(
+                            bottom: isLast ? 0 : spacing,
+                          ),
                           child: RepaintBoundary(
                             child: VaultRecordCard(
+                              key: ValueKey<String>(record.id),
                               compact: compact,
                               record: record,
+                              analysis: widget.store.analysisForRecord(record),
+                              maskedPassword: widget.store
+                                  .maskedPasswordForRecord(record),
                               onToggleFavorite: () {
                                 widget.store.toggleFavorite(record.id);
                               },
@@ -191,8 +199,13 @@ class _VaultScreenState extends State<VaultScreen>
                       final record = records[index];
                       return RepaintBoundary(
                         child: VaultRecordCard(
+                          key: ValueKey<String>(record.id),
                           compact: compact,
                           record: record,
+                          analysis: widget.store.analysisForRecord(record),
+                          maskedPassword: widget.store.maskedPasswordForRecord(
+                            record,
+                          ),
                           onToggleFavorite: () {
                             widget.store.toggleFavorite(record.id);
                           },
@@ -273,6 +286,13 @@ class _VaultTopArea extends StatelessWidget {
               ),
               FilledButton.icon(
                 onPressed: onCreate,
+                style: FilledButton.styleFrom(
+                  textStyle: const TextStyle(
+                    inherit: false,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 icon: const Icon(Icons.add_rounded),
                 label: Text(context.tr('Yeni Kayit', 'New Record')),
               ),
