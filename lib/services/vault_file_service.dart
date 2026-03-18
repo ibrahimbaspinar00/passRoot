@@ -2,13 +2,20 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class VaultFileService {
-  static Future<String?> pickImportFilePath() async {
+  static const String _lastImportPathKey = 'passroot_last_import_path_v1';
+
+  static Future<String?> pickImportFilePath({
+    List<String> allowedExtensions = const <String>['json', 'csv'],
+    String? initialDirectory,
+  }) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const <String>['json'],
+      allowedExtensions: allowedExtensions,
       allowMultiple: false,
+      initialDirectory: initialDirectory,
     );
     return result?.files.single.path;
   }
@@ -46,6 +53,42 @@ class VaultFileService {
 
   static Future<String> readFile(String path) async {
     return File(path).readAsString();
+  }
+
+  static Future<bool> exists(String path) async {
+    return File(path).exists();
+  }
+
+  static Future<bool> deleteFile(String path) async {
+    try {
+      final file = File(path);
+      if (!await file.exists()) {
+        return false;
+      }
+      await file.delete();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> saveLastImportPath(String path) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastImportPathKey, path.trim());
+  }
+
+  static Future<String?> lastImportPath() async {
+    final prefs = await SharedPreferences.getInstance();
+    final path = prefs.getString(_lastImportPathKey)?.trim();
+    if (path == null || path.isEmpty) {
+      return null;
+    }
+    return path;
+  }
+
+  static Future<void> clearLastImportPath() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_lastImportPathKey);
   }
 
   static Future<File> createBackup(String content) async {

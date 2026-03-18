@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
-import 'app_shell.dart';
+import 'auth_gate.dart';
 import 'app_theme.dart';
 import '../models/app_settings.dart';
 import '../state/app_settings_store.dart';
@@ -56,7 +56,7 @@ class _PassRootAppState extends State<PassRootApp> {
               : ThemeMode.light,
           theme: AppTheme.light(accent: _settingsStore.settings.themeAccent),
           darkTheme: AppTheme.dark(accent: _settingsStore.settings.themeAccent),
-          home: AppShell(settingsStore: _settingsStore),
+          home: AuthGate(settingsStore: _settingsStore),
         );
       },
     );

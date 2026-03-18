@@ -257,6 +257,198 @@ class VaultStore extends ChangeNotifier {
     return parsed.length;
   }
 
+  int importFromCsvString(String raw) {
+    final rows = _CsvTableParser.parse(raw);
+    if (rows.isEmpty) {
+      throw const FormatException('CSV dosyasi bos.');
+    }
+
+    final headers = rows.first.map(_normalizeCsvHeader).toList(growable: false);
+    final urlIndex = _findHeaderIndex(headers, const <String>[
+      'url',
+      'website',
+      'site',
+      'origin',
+      'loginuri',
+    ]);
+    final usernameIndex = _findHeaderIndex(headers, const <String>[
+      'username',
+      'user',
+      'login',
+      'email',
+    ]);
+    final passwordIndex = _findHeaderIndex(headers, const <String>[
+      'password',
+      'pass',
+      'sifre',
+    ]);
+    final nameIndex = _findHeaderIndex(headers, const <String>[
+      'name',
+      'title',
+      'sitename',
+      'accountname',
+    ]);
+    final noteIndex = _findHeaderIndex(headers, const <String>[
+      'note',
+      'notes',
+      'comment',
+      'aciklama',
+    ]);
+
+    if (passwordIndex == -1) {
+      throw const FormatException(
+        'CSV basligi desteklenmiyor. Beklenen kolon: password.',
+      );
+    }
+
+    final now = DateTime.now();
+    final parsed = <VaultRecord>[];
+    for (var rowIndex = 1; rowIndex < rows.length; rowIndex++) {
+      final row = rows[rowIndex];
+      final rawUrl = _csvValue(row, urlIndex);
+      final username = _csvValue(row, usernameIndex);
+      final password = _csvValue(row, passwordIndex);
+      final rawName = _csvValue(row, nameIndex);
+      final rawNote = _csvValue(row, noteIndex);
+
+      if (rawUrl.isEmpty && username.isEmpty && password.isEmpty && rawName.isEmpty) {
+        continue;
+      }
+      if (password.isEmpty) {
+        continue;
+      }
+
+      final normalizedUrl = _normalizeImportedUrl(rawUrl);
+      final platform = _platformFromUrl(normalizedUrl);
+      final title = _resolveImportedTitle(
+        name: rawName,
+        url: normalizedUrl,
+        username: username,
+        index: parsed.length + 1,
+      );
+      final note = _mergeImportedNote(rawNote);
+      final category = normalizedUrl.isNotEmpty
+          ? RecordCategory.website
+          : RecordCategory.other;
+
+      parsed.add(
+        VaultRecord(
+          id: '${now.microsecondsSinceEpoch}_${rowIndex}_${parsed.length}',
+          title: title,
+          category: category,
+          platform: platform.isEmpty ? title : platform,
+          accountName: username,
+          password: password,
+          note: note,
+          websiteOrDescription: normalizedUrl,
+          isFavorite: false,
+          securityNote: '',
+          securityTag: '',
+          tags: const <String>[],
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+    }
+
+    if (parsed.isEmpty) {
+      throw const FormatException(
+        'CSV dosyasinda aktarilacak parola kaydi bulunamadi.',
+      );
+    }
+
+    replaceAllRecords(parsed);
+    return parsed.length;
+  }
+
+  int _findHeaderIndex(List<String> headers, List<String> aliases) {
+    final normalizedAliases = aliases
+        .map(_normalizeCsvHeader)
+        .toSet();
+    for (var i = 0; i < headers.length; i++) {
+      if (normalizedAliases.contains(headers[i])) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  String _normalizeCsvHeader(String value) {
+    var normalized = value.trim().toLowerCase();
+    if (normalized.startsWith('\uFEFF')) {
+      normalized = normalized.substring(1);
+    }
+    normalized = normalized.replaceAll('"', '');
+    normalized = normalized.replaceAll(RegExp(r'[\s_-]+'), '');
+    return normalized;
+  }
+
+  String _csvValue(List<String> row, int index) {
+    if (index < 0 || index >= row.length) {
+      return '';
+    }
+    return row[index].trim();
+  }
+
+  String _normalizeImportedUrl(String value) {
+    final raw = value.trim();
+    if (raw.isEmpty) {
+      return '';
+    }
+    final candidate = raw.contains('://') ? raw : 'https://$raw';
+    final uri = Uri.tryParse(candidate);
+    if (uri == null) {
+      return raw;
+    }
+    if ((uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) {
+      return uri.toString();
+    }
+    return raw;
+  }
+
+  String _platformFromUrl(String url) {
+    if (url.trim().isEmpty) {
+      return '';
+    }
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.host.trim().isEmpty) {
+      return '';
+    }
+    final host = uri.host.toLowerCase();
+    if (host.startsWith('www.')) {
+      return host.substring(4);
+    }
+    return host;
+  }
+
+  String _resolveImportedTitle({
+    required String name,
+    required String url,
+    required String username,
+    required int index,
+  }) {
+    if (name.trim().isNotEmpty) {
+      return name.trim();
+    }
+    final host = _platformFromUrl(url);
+    if (host.isNotEmpty) {
+      return host;
+    }
+    if (username.trim().isNotEmpty) {
+      return username.trim();
+    }
+    return 'Imported Record $index';
+  }
+
+  String _mergeImportedNote(String rawNote) {
+    final sourceTag = '[Imported from Google Password Manager CSV]';
+    final trimmed = rawNote.trim();
+    if (trimmed.isEmpty) {
+      return sourceTag;
+    }
+    return '$trimmed\n\n$sourceTag';
+  }
+
   Map<RecordCategory, int> get categoryCount {
     final map = <RecordCategory, int>{};
     for (final record in _records) {
@@ -294,4 +486,63 @@ class _DerivedPasswordData {
   final String rawPassword;
   final PasswordAnalysis analysis;
   final String maskedPassword;
+}
+
+class _CsvTableParser {
+  static List<List<String>> parse(String input) {
+    final rows = <List<String>>[];
+    final row = <String>[];
+    final cell = StringBuffer();
+
+    var inQuotes = false;
+    var i = 0;
+    while (i < input.length) {
+      final char = input[i];
+      if (char == '"') {
+        final nextIsQuote = i + 1 < input.length && input[i + 1] == '"';
+        if (inQuotes && nextIsQuote) {
+          cell.write('"');
+          i += 2;
+          continue;
+        }
+        inQuotes = !inQuotes;
+        i++;
+        continue;
+      }
+
+      if (!inQuotes && char == ',') {
+        row.add(cell.toString());
+        cell.clear();
+        i++;
+        continue;
+      }
+
+      if (!inQuotes && (char == '\n' || char == '\r')) {
+        row.add(cell.toString());
+        cell.clear();
+        rows.add(List<String>.from(row));
+        row.clear();
+
+        if (char == '\r' && i + 1 < input.length && input[i + 1] == '\n') {
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
+      }
+
+      cell.write(char);
+      i++;
+    }
+
+    final hasTailData = cell.isNotEmpty || row.isNotEmpty;
+    if (hasTailData) {
+      row.add(cell.toString());
+      rows.add(List<String>.from(row));
+    }
+
+    return rows
+        .where((r) => r.any((value) => value.trim().isNotEmpty))
+        .toList(growable: false);
+  }
 }

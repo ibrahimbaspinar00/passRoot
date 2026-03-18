@@ -100,6 +100,16 @@ class AppSettingsStore extends ChangeNotifier {
     await _update(_settings.copyWith(autoLockOption: value));
   }
 
+  Future<void> setFirebaseSessionTimeoutEnabled(bool value) async {
+    await _update(_settings.copyWith(firebaseSessionTimeoutEnabled: value));
+  }
+
+  Future<void> setFirebaseSessionTimeoutOption(
+    FirebaseSessionTimeoutOption value,
+  ) async {
+    await _update(_settings.copyWith(firebaseSessionTimeoutOption: value));
+  }
+
   Future<void> setLanguage(AppLanguage language) async {
     await _update(_settings.copyWith(language: language));
   }

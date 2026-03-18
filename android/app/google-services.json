@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "169520989804",
+    "project_id": "passroot-e2901",
+    "storage_bucket": "passroot-e2901.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:169520989804:android:0f5dfbe7f71b43b3137a49",
+        "android_client_info": {
+          "package_name": "com.example.passroot"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "169520989804-1d0jirdig9i0uk5jcrv68ft6d019dej6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.passroot",
+            "certificate_hash": "d06961606caba840c352129cd6ef1be5904b1040"
+          }
+        },
+        {
+          "client_id": "169520989804-p55ii4msd5361f7jmv2g1glrbkn19las.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAVWcVcQrkKwA7e3H5xOfoHgaUydu9dz94"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "169520989804-p55ii4msd5361f7jmv2g1glrbkn19las.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

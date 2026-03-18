@@ -1,11 +1,14 @@
 import 'dart:async';
 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
 import '../models/app_settings.dart';
 import '../models/vault_record.dart';
 import '../services/biometric_service.dart';
+import '../services/firebase_account_service.dart';
 import '../screens/dashboard_screen.dart';
 import '../screens/record_form_screen.dart';
 import '../screens/security_detail_screen.dart';
@@ -28,12 +31,17 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   late final VaultStore _store;
   late final BiometricService _biometricService;
+  FirebaseAccountService? _firebaseAccountService;
   late final List<Widget> _pages;
   int _index = 0;
   bool _locked = false;
+  bool _sessionSignOutInProgress = false;
   DateTime? _pausedAt;
   DateTime? _lastInteractionAt;
+  DateTime? _lastSessionActivityAt;
   Timer? _inactivityTimer;
+  Timer? _sessionTimer;
+  StreamSubscription<User?>? _authStateSubscription;
 
   @override
   void initState() {
@@ -41,6 +49,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _store = VaultStore();
     _biometricService = BiometricService();
+    if (Firebase.apps.isNotEmpty) {
+      _firebaseAccountService = FirebaseAccountService();
+    }
     _pages = <Widget>[
       DashboardScreen(
         key: const PageStorageKey<String>('dashboard-screen'),
@@ -60,6 +71,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         settingsStore: widget.settingsStore,
       ),
     ];
+    _authStateSubscription = _firebaseAccountService?.userChanges().listen((_) {
+      _lastSessionActivityAt = DateTime.now();
+      _resetSessionTimer();
+    });
     widget.settingsStore.addListener(_onSettingsChanged);
     if (widget.settingsStore.settings.appLockEnabled) {
       _locked = true;
@@ -72,6 +87,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     widget.settingsStore.removeListener(_onSettingsChanged);
     _inactivityTimer?.cancel();
+    _sessionTimer?.cancel();
+    _authStateSubscription?.cancel();
     _store.dispose();
     super.dispose();
   }
@@ -99,6 +116,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       } else {
         _resetInactivityTimer();
       }
+      unawaited(_enforceSessionTimeoutOnResume());
     }
   }
 
@@ -110,17 +128,21 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       });
     }
     _resetInactivityTimer();
+    _resetSessionTimer();
   }
 
   void _onUserInteraction() {
     if (_locked) return;
     final now = DateTime.now();
     final last = _lastInteractionAt;
-    if (last != null && now.difference(last) < const Duration(milliseconds: 320)) {
+    if (last != null &&
+        now.difference(last) < const Duration(milliseconds: 320)) {
       return;
     }
     _lastInteractionAt = now;
     _resetInactivityTimer();
+    _lastSessionActivityAt = now;
+    _resetSessionTimer();
   }
 
   void _resetInactivityTimer() {
@@ -130,6 +152,81 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final duration = settings.autoLockOption.duration;
     if (duration == Duration.zero) return;
     _inactivityTimer = Timer(duration, _lockApp);
+  }
+
+  Duration? _sessionTimeoutDuration() {
+    final settings = widget.settingsStore.settings;
+    final accountService = _firebaseAccountService;
+    if (!settings.firebaseSessionTimeoutEnabled) return null;
+    if (accountService == null) return null;
+    final user = accountService.currentUser;
+    if (user == null || user.isAnonymous) return null;
+    return settings.firebaseSessionTimeoutOption.duration;
+  }
+
+  void _resetSessionTimer() {
+    _sessionTimer?.cancel();
+    final timeout = _sessionTimeoutDuration();
+    if (timeout == null) return;
+
+    final now = DateTime.now();
+    final lastActivity = _lastSessionActivityAt ?? now;
+    _lastSessionActivityAt = lastActivity;
+    final elapsed = now.difference(lastActivity);
+    if (elapsed >= timeout) {
+      unawaited(_expireSession());
+      return;
+    }
+    _sessionTimer = Timer(timeout - elapsed, () {
+      unawaited(_expireSession());
+    });
+  }
+
+  Future<void> _enforceSessionTimeoutOnResume() async {
+    final timeout = _sessionTimeoutDuration();
+    if (timeout == null) return;
+    final now = DateTime.now();
+    final lastActivity = _lastSessionActivityAt ?? now;
+    _lastSessionActivityAt = lastActivity;
+    if (now.difference(lastActivity) >= timeout) {
+      await _expireSession();
+      return;
+    }
+    _resetSessionTimer();
+  }
+
+  Future<void> _expireSession() async {
+    if (!mounted || _sessionSignOutInProgress) return;
+    final timeout = _sessionTimeoutDuration();
+    if (timeout == null) return;
+
+    final lastActivity = _lastSessionActivityAt ?? DateTime.now();
+    if (DateTime.now().difference(lastActivity) < timeout) {
+      _resetSessionTimer();
+      return;
+    }
+
+    _sessionSignOutInProgress = true;
+    try {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            context.tr(
+              'Guvenlik icin oturum suresi doldu. Lutfen yeniden giris yapin.',
+              'Session expired for security. Please sign in again.',
+            ),
+          ),
+        ),
+      );
+      await _firebaseAccountService?.signOut();
+    } catch (_) {
+      // Keep timeout sign-out resilient even if provider sign-out fails.
+    } finally {
+      _sessionSignOutInProgress = false;
+      _sessionTimer?.cancel();
+      _lastSessionActivityAt = null;
+    }
   }
 
   void _lockApp() {
@@ -252,8 +349,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final result = await Navigator.push<VaultRecord>(
       context,
       MaterialPageRoute<VaultRecord>(
-        builder: (_) =>
-            RecordFormScreen(settingsStore: widget.settingsStore),
+        builder: (_) => RecordFormScreen(settingsStore: widget.settingsStore),
       ),
     );
     if (result == null) return;
