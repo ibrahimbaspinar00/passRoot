@@ -5,7 +5,7 @@ import 'package:cryptography/cryptography.dart';
 
 class VaultCryptoService {
   static const _algorithmId = 'aes256gcm-pbkdf2-sha256-v1';
-  static const _iterations = 120000;
+  static const _iterations = 210000;
 
   final AesGcm _cipher = AesGcm.with256bits();
   final Pbkdf2 _kdf = Pbkdf2(

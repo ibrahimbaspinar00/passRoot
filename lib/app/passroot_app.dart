@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
-import 'auth_gate.dart';
+import 'app_start_gate.dart';
 import 'app_theme.dart';
 import '../models/app_settings.dart';
+import '../screens/splash_screen.dart';
 import '../state/app_settings_store.dart';
 
 class PassRootApp extends StatefulWidget {
@@ -37,7 +38,7 @@ class _PassRootAppState extends State<PassRootApp> {
         if (!_settingsStore.loaded) {
           return const MaterialApp(
             debugShowCheckedModeBanner: false,
-            home: Scaffold(body: Center(child: CircularProgressIndicator())),
+            home: SplashScreen(),
           );
         }
 
@@ -56,7 +57,7 @@ class _PassRootAppState extends State<PassRootApp> {
               : ThemeMode.light,
           theme: AppTheme.light(accent: _settingsStore.settings.themeAccent),
           darkTheme: AppTheme.dark(accent: _settingsStore.settings.themeAccent),
-          home: AuthGate(settingsStore: _settingsStore),
+          home: AppStartGate(settingsStore: _settingsStore),
         );
       },
     );

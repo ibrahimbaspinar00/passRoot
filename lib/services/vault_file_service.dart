@@ -4,6 +4,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../utils/app_logger.dart';
+
 class VaultFileService {
   static const String _lastImportPathKey = 'passroot_last_import_path_v1';
 
@@ -21,17 +23,24 @@ class VaultFileService {
   }
 
   static Future<String?> pickExportFilePath({
-    String fileName = 'passroot_export.json',
+    String fileName = 'passroot_export.pvault',
+    List<String> allowedExtensions = const <String>['pvault'],
   }) async {
     try {
       return await FilePicker.platform.saveFile(
         dialogTitle: 'Kayitlari nereye kaydetmek istersiniz?',
         fileName: fileName,
         type: FileType.custom,
-        allowedExtensions: const <String>['json'],
+        allowedExtensions: allowedExtensions,
       );
-    } catch (_) {
-      return null;
+    } on Exception catch (error, stackTrace) {
+      AppLogger.debug(
+        'VaultFileService',
+        'Export yolu seçilemedi',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      throw const FormatException('Dışa aktarma için dosya yolu seçilemedi.');
     }
   }
 
@@ -47,7 +56,7 @@ class VaultFileService {
 
     final docs = await getApplicationDocumentsDirectory();
     final now = DateTime.now().toIso8601String().replaceAll(':', '-');
-    final file = File('${docs.path}/passroot_export_$now.json');
+    final file = File('${docs.path}/passroot_export_$now.pvault');
     return file.writeAsString(content, flush: true);
   }
 
@@ -67,7 +76,13 @@ class VaultFileService {
       }
       await file.delete();
       return true;
-    } catch (_) {
+    } on Exception catch (error, stackTrace) {
+      AppLogger.debug(
+        'VaultFileService',
+        'Dosya silinemedi',
+        error: error,
+        stackTrace: stackTrace,
+      );
       return false;
     }
   }
@@ -91,20 +106,25 @@ class VaultFileService {
     await prefs.remove(_lastImportPathKey);
   }
 
-  static Future<File> createBackup(String content) async {
+  static Future<File> createBackup(
+    String content, {
+    String extension = 'json',
+  }) async {
     final directory = await _backupDirectory();
     final now = DateTime.now().toIso8601String().replaceAll(':', '-');
-    final file = File('${directory.path}/backup_$now.json');
+    final normalizedExtension = extension.trim().isEmpty
+        ? 'json'
+        : extension.trim().toLowerCase();
+    final file = File('${directory.path}/backup_$now.$normalizedExtension');
     return file.writeAsString(content, flush: true);
   }
 
   static Future<List<File>> listBackups() async {
     final directory = await _backupDirectory();
-    final files = directory
-        .listSync()
-        .whereType<File>()
-        .where((file) => file.path.toLowerCase().endsWith('.json'))
-        .toList();
+    final files = directory.listSync().whereType<File>().where((file) {
+      final lower = file.path.toLowerCase();
+      return lower.endsWith('.json') || lower.endsWith('.pvault');
+    }).toList();
     files.sort(
       (a, b) => b.statSync().modified.compareTo(a.statSync().modified),
     );

@@ -1,20 +1,20 @@
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 
 import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
 import '../models/app_settings.dart';
-import '../services/firebase_account_service.dart';
-import '../services/firebase_vault_sync_service.dart';
+import '../services/vault_crypto_background_service.dart';
 import '../services/vault_crypto_service.dart';
 import '../services/vault_file_service.dart';
 import '../state/app_settings_store.dart';
 import '../state/vault_store.dart';
+import '../utils/app_logger.dart';
+import '../widgets/pin_dialogs.dart';
 import '../widgets/settings_section_card.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -32,23 +32,19 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const String _encryptedBackupFormat = 'passroot-encrypted-backup-v1';
+
+  late final VaultCryptoBackgroundService _cryptoWorker;
   PackageInfo? _packageInfo;
   bool _ioBusy = false;
-  bool _authBusy = false;
+  String? _ioStatus;
   String? _lastImportPath;
-  late final FirebaseVaultSyncService _firebaseSyncService;
-  late final FirebaseAccountService _firebaseAccountService;
-  late final VaultCryptoService _vaultCryptoService;
-  User? _firebaseUser;
 
   @override
   void initState() {
     super.initState();
-    _firebaseSyncService = FirebaseVaultSyncService();
-    _firebaseAccountService = FirebaseAccountService();
-    _vaultCryptoService = VaultCryptoService();
-    _firebaseUser = _firebaseAccountService.currentUser;
-    widget.settingsStore.refreshBiometricCapability();
+    _cryptoWorker = const VaultCryptoBackgroundService();
+    widget.settingsStore.refreshPinAvailability();
     _loadPackageInfo();
     _loadImportPreferences();
   }
@@ -56,10 +52,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadPackageInfo() async {
     try {
       _packageInfo = await PackageInfo.fromPlatform();
-    } catch (_) {
+    } on Exception catch (error, stackTrace) {
+      AppLogger.debug(
+        'SettingsScreen',
+        'PackageInfo could not be loaded',
+        error: error,
+        stackTrace: stackTrace,
+      );
       _packageInfo = null;
     }
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _loadImportPreferences() async {
@@ -70,6 +74,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  String get _appVersion {
+    final info = _packageInfo;
+    if (info == null) {
+      return context.tr('YÃ¼kleniyor...', 'Loading...');
+    }
+    return '${info.version} (${info.buildNumber})';
+  }
+
   void _snack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -77,21 +89,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  String _stamp(DateTime date) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${date.year}-${two(date.month)}-${two(date.day)} ${two(date.hour)}:${two(date.minute)}';
-  }
-
-  String get _appVersion {
-    final info = _packageInfo;
-    if (info == null) return context.tr('Yukleniyor...', 'Loading...');
-    return '${info.version} (${info.buildNumber})';
-  }
-
   Future<bool> _confirm({
     required String title,
     required String body,
     required String okText,
+    bool danger = false,
   }) async {
     final result = await showDialog<bool>(
       context: context,
@@ -102,9 +104,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: Text(context.tr('Iptal', 'Cancel')),
+              child: Text(context.tr('Ä°ptal', 'Cancel')),
             ),
             FilledButton(
+              style: danger
+                  ? FilledButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.error,
+                      foregroundColor: Theme.of(context).colorScheme.onError,
+                    )
+                  : null,
               onPressed: () => Navigator.pop(context, true),
               child: Text(okText),
             ),
@@ -115,35 +123,94 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return result == true;
   }
 
-  Future<void> _setBusy(Future<void> Function() action) async {
+  Future<bool> _confirmPlaintextImportRisk(String fileTypeLabel) async {
+    final first = await _confirm(
+      title: context.tr('Duz Metin Icerik Riski', 'Plaintext Data Risk'),
+      body: context.tr(
+        '$fileTypeLabel dosyalari sifrelenmemis olabilir. Bu dosya ele gecerse tum kayitlariniz okunabilir.',
+        '$fileTypeLabel files may be unencrypted. If leaked, all records can be read.',
+      ),
+      okText: context.tr('Riski Anladim', 'I Understand the Risk'),
+      danger: true,
+    );
+    if (!first) {
+      return false;
+    }
+    if (!mounted) {
+      return false;
+    }
+    final second = await _confirm(
+      title: context.tr('Son Onay', 'Final Confirmation'),
+      body: context.tr(
+        'Bu import guvenli varsayilan akisin disindadir. Sadece guvenilir kaynaktan gelen dosyalarla devam edin.',
+        'This import is outside the secure default flow. Continue only with trusted files.',
+      ),
+      okText: context.tr('Yine de Devam Et', 'Continue Anyway'),
+      danger: true,
+    );
+    return second;
+  }
+
+  void _setIoStatus(String? next) {
+    if (!mounted) return;
+    setState(() {
+      _ioStatus = next;
+    });
+  }
+
+  Future<void> _setBusy(
+    Future<void> Function() action, {
+    String? initialStatus,
+  }) async {
     if (_ioBusy) return;
     setState(() {
       _ioBusy = true;
+      _ioStatus = initialStatus;
     });
     try {
       await action();
-    } catch (error) {
-      if (mounted) {
-        _snack(
-          context.tr(
-            'Islem sirasinda hata olustu: $error',
-            'An error occurred: $error',
-          ),
-        );
-      }
+    } on VaultStoreException catch (error) {
+      if (!mounted) return;
+      _snack(error.message);
+    } on VaultCryptoException catch (error) {
+      if (!mounted) return;
+      _snack(error.message);
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      _snack(error.message);
+    } on Exception catch (error, stackTrace) {
+      AppLogger.debug(
+        'SettingsScreen',
+        'Unexpected IO flow error',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (!mounted) return;
+      _snack(
+        context.tr(
+          'Ä°ÅŸlem tamamlanamadÄ±. LÃ¼tfen tekrar deneyin.',
+          'Operation failed. Please try again.',
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
           _ioBusy = false;
+          _ioStatus = null;
         });
       }
     }
   }
 
+  String _stamp(DateTime date) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${date.year}-${two(date.month)}-${two(date.day)} ${two(date.hour)}:${two(date.minute)}';
+  }
+
   String _shortPath(String path) {
     final normalized = path.trim();
     if (normalized.isEmpty) return '';
-    if (normalized.length <= 52) {
+    if (normalized.length <= 56) {
       return normalized;
     }
     final file = p.basename(normalized);
@@ -151,7 +218,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return '$file ...$tail';
   }
 
-  Future<String?> _askCloudPassphrase({
+  Future<String?> _askEncryptionKey({
     required String title,
     required String actionText,
     required bool requireConfirmation,
@@ -174,12 +241,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   Text(
                     context.tr(
-                      'Bu anahtar bulut yedegi sifrelemek/cozmek icin kullanilir. Unutursaniz yedegi acamazsiniz.',
-                      'This key encrypts/decrypts cloud backup. If you forget it, backup cannot be restored.',
+                      'Bu anahtar yedek dosyasini sifrelemek/cozmek icin kullanilir. Unutursaniz yedek acilamaz.',
+                      'This key encrypts/decrypts the backup file. If forgotten, backup cannot be opened.',
                     ),
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w500,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -247,17 +314,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: Text(context.tr('Iptal', 'Cancel')),
+                  child: Text(context.tr('Ä°ptal', 'Cancel')),
                 ),
                 FilledButton(
                   onPressed: () {
                     final pass = passController.text.trim();
                     final repeated = confirmController.text.trim();
-                    if (pass.length < 6) {
+                    if (pass.length < 8) {
                       setDialogState(() {
                         errorText = context.tr(
-                          'Anahtar en az 6 karakter olmali.',
-                          'Key must be at least 6 characters.',
+                          'Anahtar en az 8 karakter olmali.',
+                          'Key must be at least 8 characters.',
                         );
                       });
                       return;
@@ -287,39 +354,216 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return result;
   }
 
-  Future<void> _offerDeleteImportedCsv(String path) async {
-    final extension = p.extension(path).toLowerCase();
-    if (extension != '.csv') return;
-    if (!mounted) return;
-    final shouldDelete = await _confirm(
-      title: context.tr('CSV Dosyasi Silinsin mi?', 'Delete CSV File?'),
-      body: context.tr(
-        'CSV dosyasi sifreleri acik metin olarak tutabilir. Guvenlik icin importtan sonra silmek ister misiniz?',
-        'CSV may contain plain-text passwords. Delete it after import for security?',
-      ),
-      okText: context.tr('Dosyayi Sil', 'Delete File'),
-    );
-    if (!shouldDelete) return;
-    final deleted = await VaultFileService.deleteFile(path);
-    if (!mounted) return;
-    if (deleted) {
-      await VaultFileService.clearLastImportPath();
-      if (!mounted) return;
-      setState(() {
-        _lastImportPath = null;
-      });
-      _snack(context.tr('CSV dosyasi silindi.', 'CSV file deleted.'));
-      return;
+  String _buildEncryptedEnvelope(String encryptedPayload) {
+    return jsonEncode(<String, dynamic>{
+      'format': _encryptedBackupFormat,
+      'version': 1,
+      'createdAt': DateTime.now().toIso8601String(),
+      'payload': encryptedPayload,
+    });
+  }
+
+  String? _extractEncryptedPayload(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return null;
+      final format = (decoded['format'] as String?)?.trim();
+      if (format != _encryptedBackupFormat) return null;
+      final payload = (decoded['payload'] as String?)?.trim();
+      if (payload == null || payload.isEmpty) return null;
+      return payload;
+    } on FormatException {
+      return null;
     }
-    _snack(
+  }
+
+  bool _isPlainJsonVaultPayload(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map<String, dynamic> && decoded['records'] is List;
+    } on FormatException {
+      return false;
+    }
+  }
+
+  Future<int> _importFromContent({
+    required String content,
+    required bool allowPlainJson,
+  }) async {
+    final encryptedPayload = _extractEncryptedPayload(content);
+    if (encryptedPayload != null) {
+      _setIoStatus(
+        context.tr(
+          'Sifreli yedek icin anahtar bekleniyor...',
+          'Waiting for backup key...',
+        ),
+      );
+      final key = await _askEncryptionKey(
+        title: context.tr('Yedek Anahtarini Girin', 'Enter Backup Key'),
+        actionText: context.tr('Yedegi Ac', 'Decrypt Backup'),
+        requireConfirmation: false,
+      );
+      if (key == null) {
+        throw const FormatException('Islem iptal edildi.');
+      }
+      if (!mounted) {
+        throw const FormatException('Islem iptal edildi.');
+      }
+      _setIoStatus(
+        context.tr('Yedek dosyasi cozuluyor...', 'Decrypting backup...'),
+      );
+      final decrypted = await _cryptoWorker.decryptString(
+        encryptedPayload: encryptedPayload,
+        passphrase: key,
+      );
+      if (!mounted) {
+        throw const FormatException('Islem iptal edildi.');
+      }
+      _setIoStatus(
+        context.tr('Kayitlar ice aktariliyor...', 'Importing records...'),
+      );
+      return await widget.store.importFromJsonString(decrypted);
+    }
+
+    if (!allowPlainJson) {
+      throw const FormatException(
+        'Bu ekran yalnizca sifreli (.pvault) yedekleri kabul eder.',
+      );
+    }
+
+    if (!_isPlainJsonVaultPayload(content)) {
+      throw const FormatException('Dosya formati gecersiz veya bozuk.');
+    }
+    final proceed = await _confirmPlaintextImportRisk('JSON');
+    if (!proceed) {
+      throw const FormatException('Islem iptal edildi.');
+    }
+    if (!mounted) {
+      throw const FormatException('Islem iptal edildi.');
+    }
+    _setIoStatus(
       context.tr(
-        'CSV dosyasi silinemedi. Dosyayi dosya yoneticisinden manuel silebilirsiniz.',
-        'CSV file could not be deleted. You can delete it manually from file manager.',
+        'JSON kayitlari ice aktariliyor...',
+        'Importing JSON records...',
       ),
+    );
+    return await widget.store.importFromJsonString(content);
+  }
+
+  Future<void> _exportData() async {
+    await _setBusy(() async {
+      _setIoStatus(
+        context.tr(
+          'Sifreleme anahtari bekleniyor...',
+          'Waiting for encryption key...',
+        ),
+      );
+      final key = await _askEncryptionKey(
+        title: context.tr('Sifreli Disa Aktar', 'Encrypted Export'),
+        actionText: context.tr('Disa Aktar', 'Export'),
+        requireConfirmation: true,
+      );
+      if (key == null) return;
+      if (!mounted) return;
+
+      _setIoStatus(
+        context.tr(
+          'Veriler export icin hazirlaniyor...',
+          'Preparing export payload...',
+        ),
+      );
+      final plainPayload = await widget.store.encodeJsonInBackground(
+        pretty: false,
+      );
+      if (!mounted) return;
+      _setIoStatus(
+        context.tr('Veriler sifreleniyor...', 'Encrypting records...'),
+      );
+      final encryptedPayload = await _cryptoWorker.encryptString(
+        plaintext: plainPayload,
+        passphrase: key,
+      );
+      final fileName =
+          'passroot_export_${DateTime.now().toIso8601String().split('T').first}.pvault';
+      final selectedPath = await VaultFileService.pickExportFilePath(
+        fileName: fileName,
+        allowedExtensions: const <String>['pvault'],
+      );
+      if (!mounted) return;
+      _setIoStatus(context.tr('Dosya kaydediliyor...', 'Saving file...'));
+      final file = await VaultFileService.writeExportFile(
+        content: _buildEncryptedEnvelope(encryptedPayload),
+        path: selectedPath,
+      );
+      if (!mounted) return;
+      _snack(
+        context.tr(
+          'Sifreli disa aktarma tamamlandi: ${file.path}',
+          'Encrypted export completed: ${file.path}',
+        ),
+      );
+    }, initialStatus: context.tr('Export baslatiliyor...', 'Starting export...'));
+  }
+
+  Future<void> _backupNow() async {
+    await _setBusy(
+      () async {
+        _setIoStatus(
+          context.tr(
+            'Sifreleme anahtari bekleniyor...',
+            'Waiting for encryption key...',
+          ),
+        );
+        final key = await _askEncryptionKey(
+          title: context.tr('Sifreli Yedek Olustur', 'Create Encrypted Backup'),
+          actionText: context.tr('Yedekle', 'Backup'),
+          requireConfirmation: true,
+        );
+        if (key == null) return;
+        if (!mounted) return;
+
+        _setIoStatus(
+          context.tr(
+            'Yedek icerigi hazirlaniyor...',
+            'Preparing backup payload...',
+          ),
+        );
+        final plainPayload = await widget.store.encodeJsonInBackground(
+          pretty: false,
+        );
+        if (!mounted) return;
+        _setIoStatus(
+          context.tr('Yedek sifreleniyor...', 'Encrypting backup...'),
+        );
+        final encryptedPayload = await _cryptoWorker.encryptString(
+          plaintext: plainPayload,
+          passphrase: key,
+        );
+        if (!mounted) return;
+        _setIoStatus(
+          context.tr('Yedek dosyasi yaziliyor...', 'Writing backup file...'),
+        );
+        final file = await VaultFileService.createBackup(
+          _buildEncryptedEnvelope(encryptedPayload),
+          extension: 'pvault',
+        );
+        await widget.settingsStore.setLastBackupNow();
+        if (!mounted) return;
+        _snack(
+          context.tr(
+            'Sifreli yedek olusturuldu: ${file.path}',
+            'Encrypted backup created: ${file.path}',
+          ),
+        );
+      },
+      initialStatus: context.tr('Yedek baslatiliyor...', 'Starting backup...'),
     );
   }
 
-  Future<void> _importFromFilePath(String path) async {
+  Future<void> _importFromFilePath(
+    String path, {
+    required bool allowPlaintextFlow,
+  }) async {
     final cleanPath = path.trim();
     if (cleanPath.isEmpty) return;
     final fileExists = await VaultFileService.exists(cleanPath);
@@ -342,647 +586,285 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (!mounted) return;
     final confirm = await _confirm(
-      title: context.tr('Veriler Iceri Aktarilsin mi?', 'Import Data?'),
+      title: context.tr('Verileri Ice Aktar', 'Import Data'),
       body: context.tr(
-        'Bu islem mevcut kayitlari secilen JSON/CSV dosyasiyla degistirecek.',
-        'This replaces current records with selected JSON/CSV file content.',
+        'Bu islem mevcut kayitlari secilen dosyayla degistirecek.',
+        'This will replace current records with selected file content.',
       ),
-      okText: context.tr('Iceri Aktar', 'Import'),
+      okText: context.tr('Ice Aktar', 'Import'),
+      danger: true,
     );
     if (!confirm) return;
+    if (!mounted) return;
 
+    _setIoStatus(context.tr('Dosya okunuyor...', 'Reading file...'));
     final content = await VaultFileService.readFile(cleanPath);
     final extension = p.extension(cleanPath).toLowerCase();
-    final isCsv = extension == '.csv';
-    final count = isCsv
-        ? widget.store.importFromCsvString(content)
-        : widget.store.importFromJsonString(content);
+
+    final int count;
+    if (extension == '.csv') {
+      if (!allowPlaintextFlow) {
+        throw const FormatException(
+          'CSV import varsayilan olarak kapali. Gelismis/Riskli importu kullanin.',
+        );
+      }
+      final proceed = await _confirmPlaintextImportRisk('CSV');
+      if (!proceed) return;
+      if (!mounted) return;
+      _setIoStatus(
+        context.tr('CSV kayitlari ayrisiyor...', 'Parsing CSV records...'),
+      );
+      count = await widget.store.importFromCsvString(content);
+    } else {
+      if (extension == '.json' && !allowPlaintextFlow) {
+        throw const FormatException(
+          'JSON import varsayilan olarak kapali. Gelismis/Riskli importu kullanin.',
+        );
+      }
+      count = await _importFromContent(
+        content: content,
+        allowPlainJson: allowPlaintextFlow && extension == '.json',
+      );
+    }
+
     await VaultFileService.saveLastImportPath(cleanPath);
     if (!mounted) return;
     setState(() {
       _lastImportPath = cleanPath;
     });
     _snack(
-      isCsv
-          ? context.tr(
-              '$count kayit Google CSV dosyasindan ice aktarildi.',
-              '$count records imported from Google CSV file.',
-            )
-          : context.tr(
-              '$count kayit JSON dosyasindan ice aktarildi.',
-              '$count records imported from JSON file.',
-            ),
-    );
-    await _offerDeleteImportedCsv(cleanPath);
-  }
-
-  Future<void> _setAuthBusy(Future<void> Function() action) async {
-    if (_authBusy || _ioBusy) return;
-    setState(() {
-      _authBusy = true;
-    });
-    try {
-      await action();
-    } catch (error) {
-      if (mounted) {
-        _snack(
-          context.tr(
-            'Hesap islemi basarisiz: $error',
-            'Account action failed: $error',
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _authBusy = false;
-          _firebaseUser = _firebaseAccountService.currentUser;
-        });
-      }
-    }
-  }
-
-  String _firebaseAccountSubtitle() {
-    if (Firebase.apps.isEmpty) {
-      return context.tr('Firebase hazir degil', 'Firebase is not ready');
-    }
-    final user = _firebaseUser;
-    if (user == null) {
-      return context.tr('Giris yapilmadi', 'Not signed in');
-    }
-    if (user.isAnonymous) {
-      return context.tr(
-        'Anonim oturum acik (kalici degil)',
-        'Anonymous session is active (not permanent)',
-      );
-    }
-    final email = (user.email ?? '').trim();
-    if (email.isNotEmpty) {
-      return email;
-    }
-    return context.tr(
-      'Kalici Firebase hesabi bagli',
-      'Permanent Firebase account connected',
+      context.tr(
+        '$count kayit basariyla ice aktarildi.',
+        '$count records imported successfully.',
+      ),
     );
   }
 
-  String _firebaseAuthErrorText(FirebaseAuthException error) {
-    switch (error.code) {
-      case 'email-already-in-use':
-        return context.tr(
-          'Bu e-posta zaten kullaniliyor. Giris yapmayi deneyin.',
-          'This email is already in use. Try signing in.',
+  Future<void> _importData() async {
+    await _setBusy(
+      () async {
+        final initialDirectory = _lastImportPath == null
+            ? null
+            : p.dirname(_lastImportPath!);
+        final path = await VaultFileService.pickImportFilePath(
+          allowedExtensions: const <String>['pvault'],
+          initialDirectory: initialDirectory,
         );
-      case 'invalid-email':
-        return context.tr(
-          'E-posta formati gecersiz.',
-          'Email format is invalid.',
-        );
-      case 'weak-password':
-        return context.tr(
-          'Sifre cok zayif (en az 6 karakter).',
-          'Password is too weak (minimum 6 characters).',
-        );
-      case 'user-not-found':
-        return context.tr(
-          'Bu e-posta ile hesap bulunamadi.',
-          'No account found for this email.',
-        );
-      case 'wrong-password':
-      case 'invalid-credential':
-        return context.tr(
-          'E-posta veya sifre hatali.',
-          'Email or password is incorrect.',
-        );
-      case 'operation-not-allowed':
-        return context.tr(
-          'Bu giris yontemi Firebase Authentication icinde acik degil.',
-          'This sign-in method is not enabled in Firebase Authentication.',
-        );
-      case 'account-exists-with-different-credential':
-        return context.tr(
-          'Bu e-posta farkli bir giris yontemiyle kayitli. Once o yontemle giris yapin.',
-          'This email is registered with a different sign-in method. Sign in with that method first.',
-        );
-      case 'credential-already-in-use':
-        return context.tr(
-          'Bu giris bilgisi baska bir hesapta kullaniliyor.',
-          'This credential is already used by another account.',
-        );
-      case 'provider-already-linked':
-        return context.tr(
-          'Bu giris yontemi zaten mevcut hesaba bagli.',
-          'This provider is already linked to the current account.',
-        );
-      case 'user-disabled':
-        return context.tr(
-          'Bu hesap devre disi birakilmis.',
-          'This account has been disabled.',
-        );
-      case 'network-request-failed':
-        return context.tr(
-          'Ag baglantisi hatasi. Internet baglantinizi kontrol edin.',
-          'Network error. Check your internet connection.',
-        );
-      case 'too-many-requests':
-        return context.tr(
-          'Cok fazla deneme yapildi, lutfen sonra tekrar deneyin.',
-          'Too many attempts, please try again later.',
-        );
-      default:
-        return context.tr(
-          'Firebase hata: ${error.message ?? error.code}',
-          'Firebase error: ${error.message ?? error.code}',
-        );
-    }
-  }
-
-  Future<_EmailPasswordPayload?> _askEmailPassword({
-    required String title,
-    required String actionText,
-    required bool askConfirmPassword,
-  }) async {
-    final emailController = TextEditingController();
-    final passwordController = TextEditingController();
-    final confirmController = TextEditingController();
-
-    String? errorText;
-    bool obscurePassword = true;
-    bool obscureConfirm = true;
-
-    final result = await showDialog<_EmailPasswordPayload>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: Text(title),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: emailController,
-                    keyboardType: TextInputType.emailAddress,
-                    autocorrect: false,
-                    decoration: InputDecoration(
-                      labelText: context.tr('E-posta', 'Email'),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: passwordController,
-                    obscureText: obscurePassword,
-                    autocorrect: false,
-                    decoration: InputDecoration(
-                      labelText: context.tr('Sifre', 'Password'),
-                      suffixIcon: IconButton(
-                        onPressed: () {
-                          setDialogState(() {
-                            obscurePassword = !obscurePassword;
-                          });
-                        },
-                        icon: Icon(
-                          obscurePassword
-                              ? Icons.visibility_rounded
-                              : Icons.visibility_off_rounded,
-                        ),
-                      ),
-                    ),
-                  ),
-                  if (askConfirmPassword) ...[
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: confirmController,
-                      obscureText: obscureConfirm,
-                      autocorrect: false,
-                      decoration: InputDecoration(
-                        labelText: context.tr(
-                          'Sifre Tekrar',
-                          'Repeat Password',
-                        ),
-                        suffixIcon: IconButton(
-                          onPressed: () {
-                            setDialogState(() {
-                              obscureConfirm = !obscureConfirm;
-                            });
-                          },
-                          icon: Icon(
-                            obscureConfirm
-                                ? Icons.visibility_rounded
-                                : Icons.visibility_off_rounded,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (errorText != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      errorText!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(context.tr('Iptal', 'Cancel')),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final email = emailController.text.trim();
-                    final password = passwordController.text;
-                    final confirmPassword = confirmController.text;
-                    final emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
-
-                    if (!emailPattern.hasMatch(email)) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'Gecerli bir e-posta girin.',
-                          'Enter a valid email address.',
-                        );
-                      });
-                      return;
-                    }
-                    if (password.length < 6) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'Sifre en az 6 karakter olmali.',
-                          'Password must be at least 6 characters.',
-                        );
-                      });
-                      return;
-                    }
-                    if (askConfirmPassword && password != confirmPassword) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'Sifreler eslesmiyor.',
-                          'Passwords do not match.',
-                        );
-                      });
-                      return;
-                    }
-                    Navigator.pop(
-                      context,
-                      _EmailPasswordPayload(email: email, password: password),
-                    );
-                  },
-                  child: Text(actionText),
-                ),
-              ],
-            );
-          },
-        );
+        if (path == null) return;
+        await _importFromFilePath(path, allowPlaintextFlow: false);
       },
+      initialStatus: context.tr('Import baslatiliyor...', 'Starting import...'),
     );
-
-    emailController.dispose();
-    passwordController.dispose();
-    confirmController.dispose();
-    return result;
   }
 
-  Future<void> _linkAnonymousAccountWithEmail() async {
-    if (Firebase.apps.isEmpty) {
-      _snack(
-        context.tr(
-          'Firebase hazir degil. Android Firebase kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android Firebase setup.',
-        ),
-      );
-      return;
-    }
-
-    try {
-      await _firebaseAccountService.ensureAnonymousUser();
-    } on FirebaseAuthException catch (error) {
-      if (!mounted) return;
-      _snack(_firebaseAuthErrorText(error));
-      return;
-    }
-    if (!mounted) return;
-
-    _firebaseUser = _firebaseAccountService.currentUser;
-    if ((_firebaseUser?.isAnonymous ?? false) == false) {
-      _snack(
-        context.tr(
-          'Bu cihazda zaten kalici bir hesap acik.',
-          'A permanent account is already active on this device.',
-        ),
-      );
-      setState(() {});
-      return;
-    }
-
-    final payload = await _askEmailPassword(
-      title: context.tr(
-        'Anonim Hesabi Kalici Yap',
-        'Convert Anonymous Account',
+  Future<void> _importRiskyPlaintextData() async {
+    await _setBusy(
+      () async {
+        final initialDirectory = _lastImportPath == null
+            ? null
+            : p.dirname(_lastImportPath!);
+        final path = await VaultFileService.pickImportFilePath(
+          allowedExtensions: const <String>['json', 'csv'],
+          initialDirectory: initialDirectory,
+        );
+        if (path == null) return;
+        await _importFromFilePath(path, allowPlaintextFlow: true);
+      },
+      initialStatus: context.tr(
+        'Riskli import baslatiliyor...',
+        'Starting risky import...',
       ),
-      actionText: context.tr('Bagla', 'Link'),
-      askConfirmPassword: true,
     );
-    if (payload == null) return;
-
-    await _setAuthBusy(() async {
-      try {
-        await _firebaseAccountService.linkAnonymousWithEmail(
-          email: payload.email,
-          password: payload.password,
-        );
-        if (!mounted) return;
-        _snack(
-          context.tr(
-            'Anonim hesap email ile kalici hale getirildi.',
-            'Anonymous account has been converted to a permanent email account.',
-          ),
-        );
-      } on FirebaseAuthException catch (error) {
-        if (!mounted) return;
-        _snack(_firebaseAuthErrorText(error));
-      } on FirebaseAccountException catch (error) {
-        if (!mounted) return;
-        _snack(error.message);
-      }
-    });
   }
 
-  Future<void> _linkAnonymousAccountWithGoogle() async {
-    if (Firebase.apps.isEmpty) {
+  Future<void> _importFromLastSelectedPath() async {
+    final path = (_lastImportPath ?? '').trim();
+    if (path.isEmpty) {
       _snack(
         context.tr(
-          'Firebase hazir degil. Android Firebase kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android Firebase setup.',
+          'Son secilen import dosyasi bulunamadi.',
+          'No recently selected import file found.',
         ),
       );
       return;
     }
+    await _setBusy(
+      () async {
+        await _importFromFilePath(path, allowPlaintextFlow: false);
+      },
+      initialStatus: context.tr('Import baslatiliyor...', 'Starting import...'),
+    );
+  }
 
-    try {
-      await _firebaseAccountService.ensureAnonymousUser();
-    } on FirebaseAuthException catch (error) {
+  Future<void> _restoreBackup() async {
+    await _setBusy(() async {
+      final backups = await VaultFileService.listBackups();
       if (!mounted) return;
-      _snack(_firebaseAuthErrorText(error));
-      return;
-    }
-    if (!mounted) return;
-
-    _firebaseUser = _firebaseAccountService.currentUser;
-    if ((_firebaseUser?.isAnonymous ?? false) == false) {
-      _snack(
-        context.tr(
-          'Bu cihazda zaten kalici bir hesap acik.',
-          'A permanent account is already active on this device.',
-        ),
-      );
-      setState(() {});
-      return;
-    }
-
-    await _setAuthBusy(() async {
-      try {
-        await _firebaseAccountService.linkAnonymousWithGoogle();
-        if (!mounted) return;
+      if (backups.isEmpty) {
         _snack(
           context.tr(
-            'Anonim hesap Google ile kalici hale getirildi.',
-            'Anonymous account has been converted to a permanent Google account.',
+            'Geri yuklenecek yedek bulunamadi.',
+            'No backup found to restore.',
           ),
         );
-      } on FirebaseAuthException catch (error) {
-        if (!mounted) return;
-        _snack(_firebaseAuthErrorText(error));
-      } on FirebaseAccountException catch (error) {
-        if (!mounted) return;
-        _snack(error.message);
+        return;
       }
-    });
-  }
 
-  Future<void> _registerWithEmail() async {
-    if (Firebase.apps.isEmpty) {
-      _snack(
-        context.tr(
-          'Firebase hazir degil. Android Firebase kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android Firebase setup.',
-        ),
+      final selected = await showModalBottomSheet<File>(
+        context: context,
+        showDragHandle: true,
+        builder: (context) {
+          return SafeArea(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final file in backups)
+                  ListTile(
+                    leading: const Icon(Icons.backup_rounded),
+                    title: Text(file.uri.pathSegments.last),
+                    subtitle: Text(_stamp(file.statSync().modified)),
+                    onTap: () => Navigator.pop(context, file),
+                  ),
+              ],
+            ),
+          );
+        },
       );
-      return;
-    }
-    final payload = await _askEmailPassword(
-      title: context.tr('Email ile Kayit Ol', 'Register with Email'),
-      actionText: context.tr('Kayit Ol', 'Register'),
-      askConfirmPassword: true,
-    );
-    if (payload == null) return;
+      if (selected == null) return;
 
-    await _setAuthBusy(() async {
-      try {
-        await _firebaseAccountService.registerWithEmail(
-          email: payload.email,
-          password: payload.password,
-        );
-        if (!mounted) return;
-        _snack(
-          context.tr(
-            'Email hesabi olusturuldu ve giris yapildi.',
-            'Email account created and signed in.',
-          ),
-        );
-      } on FirebaseAuthException catch (error) {
-        if (!mounted) return;
-        _snack(_firebaseAuthErrorText(error));
-      }
-    });
-  }
-
-  Future<void> _signInWithEmail() async {
-    if (Firebase.apps.isEmpty) {
-      _snack(
-        context.tr(
-          'Firebase hazir degil. Android Firebase kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android Firebase setup.',
-        ),
-      );
-      return;
-    }
-
-    if (_firebaseUser?.isAnonymous == true) {
+      if (!mounted) return;
       final confirm = await _confirm(
-        title: context.tr('Dikkat', 'Attention'),
+        title: context.tr('Yedekten Geri Yukle', 'Restore Backup'),
         body: context.tr(
-          'Email ile giris yaparsaniz mevcut anonim oturumdan cikis yapilacak. Anonim hesabi kaybetmemek icin once "Anonim Hesabi Kalici Yap" secenegini kullanin.',
-          'Signing in with email will leave the current anonymous session. To keep that anonymous account, use "Convert Anonymous Account" first.',
+          'Secilen yedek yuklendiginde mevcut kayitlar degisecek.',
+          'Current records will be replaced with selected backup.',
         ),
-        okText: context.tr('Devam Et', 'Continue'),
+        okText: context.tr('Geri Yukle', 'Restore'),
+        danger: true,
       );
       if (!confirm) return;
-    }
-    if (!mounted) return;
+      if (!mounted) return;
 
-    final payload = await _askEmailPassword(
-      title: context.tr('Email ile Giris Yap', 'Sign In with Email'),
-      actionText: context.tr('Giris Yap', 'Sign In'),
-      askConfirmPassword: false,
-    );
-    if (payload == null) return;
-
-    await _setAuthBusy(() async {
-      try {
-        await _firebaseAccountService.signInWithEmail(
-          email: payload.email,
-          password: payload.password,
-        );
-        if (!mounted) return;
-        _snack(
-          context.tr(
-            'Email hesaba giris yapildi.',
-            'Signed in with email account.',
-          ),
-        );
-      } on FirebaseAuthException catch (error) {
-        if (!mounted) return;
-        _snack(_firebaseAuthErrorText(error));
-      }
-    });
-  }
-
-  Future<void> _signInWithGoogle() async {
-    if (Firebase.apps.isEmpty) {
-      _snack(
+      _setIoStatus(
+        context.tr('Yedek dosyasi okunuyor...', 'Reading backup file...'),
+      );
+      final content = await selected.readAsString();
+      if (!mounted) return;
+      _setIoStatus(
         context.tr(
-          'Firebase hazir degil. Android Firebase kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android Firebase setup.',
+          'Yedek icerigi yukleniyor...',
+          'Importing backup content...',
         ),
       );
-      return;
-    }
-
-    if (_firebaseUser?.isAnonymous == true) {
-      final confirm = await _confirm(
-        title: context.tr('Dikkat', 'Attention'),
-        body: context.tr(
-          'Google ile giris yaparsaniz mevcut anonim oturumdan cikis yapilacak. Anonim hesabi kaybetmemek icin once "Anonim Hesabi Google ile Kalici Yap" secenegini kullanin.',
-          'Signing in with Google will leave the current anonymous session. To keep that account, use "Convert Anonymous Account with Google" first.',
-        ),
-        okText: context.tr('Devam Et', 'Continue'),
+      final count = await _importFromContent(
+        content: content,
+        allowPlainJson: selected.path.toLowerCase().endsWith('.json'),
       );
-      if (!confirm) return;
-    }
-    if (!mounted) return;
-
-    await _setAuthBusy(() async {
-      try {
-        await _firebaseAccountService.signInWithGoogle();
-        if (!mounted) return;
-        _snack(
-          context.tr(
-            'Google hesaba giris yapildi.',
-            'Signed in with Google account.',
-          ),
-        );
-      } on FirebaseAuthException catch (error) {
-        if (!mounted) return;
-        _snack(_firebaseAuthErrorText(error));
-      } on FirebaseAccountException catch (error) {
-        if (!mounted) return;
-        _snack(error.message);
-      }
+      if (!mounted) return;
+      _snack(
+        context.tr('$count kayit geri yuklendi.', '$count records restored.'),
+      );
     });
   }
 
-  Future<void> _signOutFromFirebase() async {
-    if (_firebaseUser == null) return;
-
+  Future<void> _clearAllRecords() async {
     final confirm = await _confirm(
-      title: context.tr(
-        'Firebase Hesaptan Cikis',
-        'Sign Out from Firebase Account',
-      ),
+      title: context.tr('TÃ¼m Veriler Silinsin mi?', 'Delete All Data?'),
       body: context.tr(
-        'Hesaptan cikis yapmak istediginize emin misiniz?',
-        'Are you sure you want to sign out from this account?',
+        'Bu iÅŸlem geri alÄ±namaz. TÃ¼m kasa kayÄ±tlarÄ± silinecek.',
+        'This action cannot be undone. All vault records will be deleted.',
       ),
-      okText: context.tr('Cikis Yap', 'Sign Out'),
+      okText: context.tr('Sil', 'Delete'),
+      danger: true,
     );
     if (!confirm) return;
-    if (!mounted) return;
 
-    await _setAuthBusy(() async {
-      await _firebaseAccountService.signOut();
+    await _setBusy(() async {
+      await widget.store.clearAllRecords();
       if (!mounted) return;
       _snack(
-        context.tr(
-          'Firebase hesaptan cikis yapildi.',
-          'Signed out from Firebase account.',
-        ),
+        context.tr('TÃ¼m kayÄ±tlar silindi.', 'All records have been deleted.'),
       );
     });
   }
 
-  Future<void> _pickAutoLock() async {
-    final selected = await showModalBottomSheet<AutoLockOption>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) {
-        final current = widget.settingsStore.settings.autoLockOption;
-        return SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              for (final option in AutoLockOption.values)
-                ListTile(
-                  leading: Icon(
-                    current == option
-                        ? Icons.check_circle_rounded
-                        : Icons.circle_outlined,
-                  ),
-                  title: Text(option.localizedLabel(context)),
-                  onTap: () => Navigator.pop(context, option),
-                ),
-            ],
-          ),
-        );
-      },
-    );
-    if (selected != null) {
-      await widget.settingsStore.setAutoLockOption(selected);
+  Future<bool> _managePin() async {
+    await widget.settingsStore.refreshPinAvailability(notify: false);
+    if (!mounted) return false;
+    final hasPin = widget.settingsStore.pinAvailable;
+    if (!hasPin) {
+      final newPin = await PinDialogs.askNewPin(
+        context,
+        title: context.tr('Giris PIN\'i Olustur', 'Create Access PIN'),
+        description: context.tr(
+          'Uygulamaya giris icin kullanacaginiz PIN kodunu belirleyin.',
+          'Set the PIN you will use to sign in to the app.',
+        ),
+      );
+      if (newPin == null) return false;
+      await widget.settingsStore.setPinCode(newPin);
+      if (!mounted) return false;
+      _snack(
+        context.tr(
+          'Giris PIN\'i ayarlandi.',
+          'Access PIN has been configured.',
+        ),
+      );
+      return true;
     }
+
+    final verified = await PinDialogs.verifyPin(
+      context: context,
+      onVerify: widget.settingsStore.verifyPinDetailed,
+      title: context.tr('Mevcut PIN Dogrulama', 'Verify Current PIN'),
+      description: context.tr(
+        'PIN degistirmek icin mevcut PIN kodunuzu girin.',
+        'Enter current PIN to change it.',
+      ),
+    );
+    if (!mounted || !verified) return false;
+
+    final newPin = await PinDialogs.askNewPin(
+      context,
+      title: context.tr('Yeni Giris PIN\'i', 'New Access PIN'),
+      description: context.tr(
+        'Yeni PIN 4-8 rakam olmali ve kolay tahmin edilmemeli.',
+        'New PIN must be 4-8 digits and not easy to guess.',
+      ),
+      actionText: context.tr('PIN\'i Guncelle', 'Update PIN'),
+    );
+    if (newPin == null) return false;
+    await widget.settingsStore.setPinCode(newPin);
+    if (!mounted) return false;
+    _snack(
+      context.tr('Giris PIN\'i guncellendi.', 'Access PIN has been updated.'),
+    );
+    return true;
   }
 
-  Future<void> _pickFirebaseSessionTimeout() async {
-    final selected = await showModalBottomSheet<FirebaseSessionTimeoutOption>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) {
-        final current =
-            widget.settingsStore.settings.firebaseSessionTimeoutOption;
-        return SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              for (final option in FirebaseSessionTimeoutOption.values)
-                ListTile(
-                  leading: Icon(
-                    current == option
-                        ? Icons.check_circle_rounded
-                        : Icons.circle_outlined,
-                  ),
-                  title: Text(option.localizedLabel(context)),
-                  onTap: () => Navigator.pop(context, option),
-                ),
-            ],
+  Future<void> _toggleAppLock(bool enabled) async {
+    if (enabled) {
+      await widget.settingsStore.refreshPinAvailability(notify: false);
+      if (!mounted) return;
+      if (!widget.settingsStore.pinAvailable) {
+        _snack(
+          context.tr(
+            'Uygulama kilidi iÃ§in Ã¶nce bir PIN oluÅŸturun.',
+            'Create an access PIN before enabling app lock.',
           ),
         );
-      },
-    );
-    if (selected != null) {
-      await widget.settingsStore.setFirebaseSessionTimeoutOption(selected);
+        final created = await _managePin();
+        if (!created) return;
+      }
     }
+
+    await widget.settingsStore.setAppLockEnabled(enabled);
+    if (!mounted) return;
+    _snack(
+      enabled
+          ? context.tr('Uygulama kilidi aktif edildi.', 'App lock enabled.')
+          : context.tr('Uygulama kilidi kapatÄ±ldÄ±.', 'App lock disabled.'),
+    );
   }
 
   Future<void> _pickThemeAccent() async {
@@ -997,12 +879,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               for (final accent in AppThemeAccent.values)
                 ListTile(
-                  leading: CircleAvatar(
-                    radius: 11,
-                    backgroundColor: accent.seedColor,
-                    child: current == accent
-                        ? const Icon(Icons.check, size: 14, color: Colors.white)
-                        : null,
+                  leading: Icon(
+                    current == accent
+                        ? Icons.check_circle_rounded
+                        : Icons.circle_outlined,
+                    color: accent.seedColor,
                   ),
                   title: Text(accent.localizedLabel(context)),
                   onTap: () => Navigator.pop(context, accent),
@@ -1077,668 +958,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _managePin() async {
-    final currentPin = widget.settingsStore.settings.pinCode;
-    if ((currentPin ?? '').isEmpty) {
-      final newPin = await _askNewPin();
-      if (newPin == null) return;
-      await widget.settingsStore.setPinCode(newPin);
-      if (!mounted) return;
-      _snack(context.tr('PIN kodu ayarlandi.', 'PIN configured.'));
-      return;
-    }
-
-    final action = await showModalBottomSheet<String>(
+  Future<void> _pickAutoLockOption() async {
+    final selected = await showModalBottomSheet<AutoLockOption>(
       context: context,
       showDragHandle: true,
       builder: (context) {
+        final current = widget.settingsStore.settings.autoLockOption;
         return SafeArea(
-          child: Wrap(
+          child: ListView(
+            shrinkWrap: true,
             children: [
-              ListTile(
-                leading: const Icon(Icons.password_rounded),
-                title: Text(context.tr('PIN Degistir', 'Change PIN')),
-                onTap: () => Navigator.pop(context, 'change'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_outline_rounded),
-                title: Text(context.tr('PIN Kaldir', 'Remove PIN')),
-                onTap: () => Navigator.pop(context, 'remove'),
-              ),
+              for (final option in AutoLockOption.values)
+                ListTile(
+                  leading: Icon(
+                    current == option
+                        ? Icons.check_circle_rounded
+                        : Icons.circle_outlined,
+                  ),
+                  title: Text(option.localizedLabel(context)),
+                  onTap: () => Navigator.pop(context, option),
+                ),
             ],
           ),
         );
       },
     );
-    if (action == null) return;
-    final expectedPin = currentPin ?? '';
-    if (expectedPin.isEmpty) return;
-
-    final verified = await _verifyPin(expectedPin);
-    if (!mounted) return;
-    if (!verified) {
-      _snack(
-        context.tr('PIN dogrulamasi basarisiz.', 'PIN verification failed.'),
-      );
-      return;
-    }
-    if (action == 'remove') {
-      await widget.settingsStore.clearPinCode();
-      if (!mounted) return;
-      _snack(context.tr('PIN kaldirildi.', 'PIN removed.'));
-      return;
-    }
-    final newPin = await _askNewPin();
-    if (newPin == null) return;
-    await widget.settingsStore.setPinCode(newPin);
-    if (!mounted) return;
-    _snack(context.tr('PIN guncellendi.', 'PIN updated.'));
-  }
-
-  Future<String?> _askNewPin() async {
-    final pinController = TextEditingController();
-    final repeatController = TextEditingController();
-    String? errorText;
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: Text(context.tr('PIN Kodu Ayarla', 'Set PIN')),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: pinController,
-                    maxLength: 8,
-                    keyboardType: TextInputType.number,
-                    obscureText: true,
-                    decoration: InputDecoration(
-                      labelText: context.tr('Yeni PIN', 'New PIN'),
-                      errorText: errorText,
-                    ),
-                  ),
-                  TextField(
-                    controller: repeatController,
-                    maxLength: 8,
-                    keyboardType: TextInputType.number,
-                    obscureText: true,
-                    decoration: InputDecoration(
-                      labelText: context.tr('PIN Tekrar', 'Repeat PIN'),
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(context.tr('Iptal', 'Cancel')),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final pin = pinController.text.trim();
-                    if (!RegExp(r'^\d{4,8}$').hasMatch(pin)) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'PIN 4-8 rakam olmali.',
-                          'PIN must be 4-8 digits.',
-                        );
-                      });
-                      return;
-                    }
-                    if (pin != repeatController.text.trim()) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'PIN kodlari eslesmiyor.',
-                          'PIN values do not match.',
-                        );
-                      });
-                      return;
-                    }
-                    Navigator.pop(context, pin);
-                  },
-                  child: Text(context.tr('Kaydet', 'Save')),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    pinController.dispose();
-    repeatController.dispose();
-    return result;
-  }
-
-  Future<bool> _verifyPin(String expected) async {
-    final controller = TextEditingController();
-    String? errorText;
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: Text(context.tr('PIN Dogrulama', 'Verify PIN')),
-              content: TextField(
-                controller: controller,
-                maxLength: 8,
-                keyboardType: TextInputType.number,
-                obscureText: true,
-                decoration: InputDecoration(
-                  labelText: context.tr('Mevcut PIN', 'Current PIN'),
-                  errorText: errorText,
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(context.tr('Iptal', 'Cancel')),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    if (controller.text.trim() == expected) {
-                      Navigator.pop(context, true);
-                      return;
-                    }
-                    setDialogState(() {
-                      errorText = context.tr('PIN hatali.', 'Incorrect PIN.');
-                    });
-                  },
-                  child: Text(context.tr('Dogrula', 'Verify')),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-    controller.dispose();
-    return result == true;
-  }
-
-  Future<void> _openNotificationSettings() async {
-    var local = widget.settingsStore.settings.notifications;
-    final saved = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SwitchListTile.adaptive(
-                      value: local.weakPasswordAlert,
-                      title: Text(
-                        context.tr(
-                          'Zayif sifre uyarilari',
-                          'Weak password alerts',
-                        ),
-                      ),
-                      onChanged: (value) {
-                        setSheetState(() {
-                          local = local.copyWith(weakPasswordAlert: value);
-                        });
-                      },
-                    ),
-                    SwitchListTile.adaptive(
-                      value: local.reusedPasswordAlert,
-                      title: Text(
-                        context.tr(
-                          'Tekrar eden sifre uyarilari',
-                          'Reused password alerts',
-                        ),
-                      ),
-                      onChanged: (value) {
-                        setSheetState(() {
-                          local = local.copyWith(reusedPasswordAlert: value);
-                        });
-                      },
-                    ),
-                    SwitchListTile.adaptive(
-                      value: local.backupReminder,
-                      title: Text(
-                        context.tr(
-                          'Yedekleme hatirlatmasi',
-                          'Backup reminders',
-                        ),
-                      ),
-                      onChanged: (value) {
-                        setSheetState(() {
-                          local = local.copyWith(backupReminder: value);
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: Text(context.tr('Kaydet', 'Save')),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-    if (saved == true) {
-      await widget.settingsStore.setNotificationSettings(local);
+    if (selected != null) {
+      await widget.settingsStore.setAutoLockOption(selected);
       if (!mounted) return;
       _snack(
         context.tr(
-          'Bildirim tercihleri guncellendi.',
-          'Notification preferences updated.',
+          'Otomatik kilit sÃ¼resi gÃ¼ncellendi.',
+          'Auto lock duration updated.',
         ),
       );
     }
-  }
-
-  Future<void> _openPasswordGeneratorSettings() async {
-    var local = widget.settingsStore.settings.passwordGenerator;
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: Text(
-                context.tr(
-                  'Sifre Uretici Ayarlari',
-                  'Password Generator Settings',
-                ),
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(child: Text(context.tr('Uzunluk', 'Length'))),
-                        Text(
-                          '${local.length}',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      value: local.length.toDouble(),
-                      min: 8,
-                      max: 40,
-                      divisions: 32,
-                      label: '${local.length}',
-                      onChanged: (value) {
-                        setDialogState(() {
-                          local = local.copyWith(length: value.round());
-                        });
-                      },
-                    ),
-                    CheckboxListTile(
-                      value: local.includeUppercase,
-                      title: Text(
-                        context.tr('Buyuk harf', 'Uppercase letters'),
-                      ),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          local = local.copyWith(includeUppercase: value);
-                        });
-                      },
-                    ),
-                    CheckboxListTile(
-                      value: local.includeLowercase,
-                      title: Text(
-                        context.tr('Kucuk harf', 'Lowercase letters'),
-                      ),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          local = local.copyWith(includeLowercase: value);
-                        });
-                      },
-                    ),
-                    CheckboxListTile(
-                      value: local.includeNumbers,
-                      title: Text(context.tr('Rakam', 'Numbers')),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          local = local.copyWith(includeNumbers: value);
-                        });
-                      },
-                    ),
-                    CheckboxListTile(
-                      value: local.includeSymbols,
-                      title: Text(context.tr('Sembol', 'Symbols')),
-                      onChanged: (value) {
-                        setDialogState(() {
-                          local = local.copyWith(includeSymbols: value);
-                        });
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(context.tr('Iptal', 'Cancel')),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: Text(context.tr('Kaydet', 'Save')),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-    if (saved == true) {
-      await widget.settingsStore.setPasswordGeneratorSettings(local);
-      if (!mounted) return;
-      _snack(
-        context.tr(
-          'Sifre uretici ayarlari kaydedildi.',
-          'Password generator settings saved.',
-        ),
-      );
-    }
-  }
-
-  Future<void> _exportData() async {
-    await _setBusy(() async {
-      final exportName =
-          'passroot_export_${DateTime.now().toIso8601String().split('T').first}.json';
-      final selectedPath = await VaultFileService.pickExportFilePath(
-        fileName: exportName,
-      );
-      final file = await VaultFileService.writeExportFile(
-        content: widget.store.encodeJson(pretty: true),
-        path: selectedPath,
-      );
-      if (!mounted) return;
-      _snack(
-        context.tr(
-          'Veriler disa aktarildi: ${file.path}',
-          'Data exported: ${file.path}',
-        ),
-      );
-    });
-  }
-
-  Future<void> _importData() async {
-    await _setBusy(() async {
-      final initialDirectory = _lastImportPath == null
-          ? null
-          : p.dirname(_lastImportPath!);
-      final path = await VaultFileService.pickImportFilePath(
-        allowedExtensions: const <String>['json', 'csv'],
-        initialDirectory: initialDirectory,
-      );
-      if (path == null) return;
-      await _importFromFilePath(path);
-    });
-  }
-
-  Future<void> _importFromLastSelectedPath() async {
-    final path = (_lastImportPath ?? '').trim();
-    if (path.isEmpty) {
-      _snack(
-        context.tr(
-          'Son secilen import dosyasi bulunamadi.',
-          'No recently selected import file found.',
-        ),
-      );
-      return;
-    }
-    await _setBusy(() async {
-      await _importFromFilePath(path);
-    });
-  }
-
-  Future<void> _backupNow() async {
-    await _setBusy(() async {
-      final file = await VaultFileService.createBackup(
-        widget.store.encodeJson(),
-      );
-      await widget.settingsStore.setLastBackupNow();
-      if (!mounted) return;
-      _snack(
-        context.tr(
-          'Yedek olusturuldu: ${file.path}',
-          'Backup created: ${file.path}',
-        ),
-      );
-    });
-  }
-
-  Future<void> _backupToFirebaseCloud() async {
-    if (Firebase.apps.isEmpty) {
-      _snack(
-        context.tr(
-          'Firebase hazir degil. Android kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android setup.',
-        ),
-      );
-      return;
-    }
-    final passphrase = await _askCloudPassphrase(
-      title: context.tr(
-        'Bulut Yedek Sifreleme Anahtari',
-        'Cloud Backup Encryption Key',
-      ),
-      actionText: context.tr('Yedekle', 'Backup'),
-      requireConfirmation: true,
-    );
-    if (passphrase == null) return;
-
-    await _setBusy(() async {
-      final plainPayload = widget.store.encodeJson(pretty: false);
-      final encryptedPayload = await _vaultCryptoService.encryptString(
-        plaintext: plainPayload,
-        passphrase: passphrase,
-      );
-      final count = await _firebaseSyncService.uploadEncryptedPayload(
-        encryptedPayload: encryptedPayload,
-        recordCount: widget.store.totalCount,
-      );
-      await widget.settingsStore.setLastBackupNow();
-      if (!mounted) return;
-      setState(() {
-        _firebaseUser = _firebaseAccountService.currentUser;
-      });
-      _snack(
-        context.tr(
-          '$count kayit sifrelenerek Firebase buluta yedeklendi.',
-          '$count records encrypted and backed up to Firebase cloud.',
-        ),
-      );
-    });
-  }
-
-  Future<void> _restoreBackup() async {
-    await _setBusy(() async {
-      final backups = await VaultFileService.listBackups();
-      if (!mounted) return;
-      if (backups.isEmpty) {
-        _snack(
-          context.tr(
-            'Geri yuklenecek yedek bulunamadi.',
-            'No backup found to restore.',
-          ),
-        );
-        return;
-      }
-      final selected = await showModalBottomSheet<File>(
-        context: context,
-        showDragHandle: true,
-        builder: (context) {
-          return SafeArea(
-            child: ListView(
-              shrinkWrap: true,
-              children: [
-                for (final file in backups)
-                  ListTile(
-                    leading: const Icon(Icons.backup_rounded),
-                    title: Text(file.uri.pathSegments.last),
-                    subtitle: Text(_stamp(file.statSync().modified)),
-                    onTap: () => Navigator.pop(context, file),
-                  ),
-              ],
-            ),
-          );
-        },
-      );
-      if (selected == null) return;
-      if (!mounted) return;
-      final confirm = await _confirm(
-        title: context.tr('Yedekten Geri Yukleme', 'Restore Backup'),
-        body: context.tr(
-          'Secilen yedek yuklendiginde mevcut kayitlar degisecek.',
-          'Current records will be replaced.',
-        ),
-        okText: context.tr('Geri Yukle', 'Restore'),
-      );
-      if (!confirm) return;
-      final content = await selected.readAsString();
-      final count = widget.store.importFromJsonString(content);
-      if (!mounted) return;
-      _snack(
-        context.tr('$count kayit geri yuklendi.', '$count records restored.'),
-      );
-    });
-  }
-
-  Future<void> _restoreFromFirebaseCloud() async {
-    if (Firebase.apps.isEmpty) {
-      _snack(
-        context.tr(
-          'Firebase hazir degil. Android kurulumunu kontrol edin.',
-          'Firebase is not ready. Check Android setup.',
-        ),
-      );
-      return;
-    }
-    await _setBusy(() async {
-      if (!mounted) return;
-      final confirm = await _confirm(
-        title: context.tr(
-          'Firebase Buluttan Geri Yukle',
-          'Restore from Firebase Cloud',
-        ),
-        body: context.tr(
-          'Bu islem cihazdaki mevcut kayitlari buluttaki son yedek ile degistirecek.',
-          'This will replace current local records with the latest cloud backup.',
-        ),
-        okText: context.tr('Geri Yukle', 'Restore'),
-      );
-      if (!confirm) return;
-      final backupData = await _firebaseSyncService.downloadBackupData();
-      if (!mounted) return;
-      if (backupData == null) {
-        _snack(
-          context.tr(
-            'Firebase bulutta geri yuklenecek yedek bulunamadi.',
-            'No cloud backup found in Firebase.',
-          ),
-        );
-        return;
-      }
-
-      if (backupData.isEncrypted) {
-        final passphrase = await _askCloudPassphrase(
-          title: context.tr(
-            'Bulut Yedek Cozme Anahtari',
-            'Cloud Backup Decryption Key',
-          ),
-          actionText: context.tr('Yedegi Ac', 'Decrypt Backup'),
-          requireConfirmation: false,
-        );
-        if (passphrase == null) return;
-        final decrypted = await _vaultCryptoService.decryptString(
-          encryptedPayload: backupData.encryptedPayload!,
-          passphrase: passphrase,
-        );
-        final count = widget.store.importFromJsonString(decrypted);
-        if (!mounted) return;
-        setState(() {
-          _firebaseUser = _firebaseAccountService.currentUser;
-        });
-        _snack(
-          context.tr(
-            '$count kayit sifreli bulut yedeginden yuklendi.',
-            '$count records restored from encrypted cloud backup.',
-          ),
-        );
-        return;
-      }
-
-      final records = backupData.plainRecords ?? const [];
-      widget.store.replaceAllRecords(records);
-      if (!mounted) return;
-      setState(() {
-        _firebaseUser = _firebaseAccountService.currentUser;
-      });
-      _snack(
-        context.tr(
-          '${records.length} kayit Firebase buluttan yuklendi.',
-          '${records.length} records restored from Firebase cloud.',
-        ),
-      );
-    });
-  }
-
-  Future<void> _clearAllRecords() async {
-    final confirm = await _confirm(
-      title: context.tr('Tum Veriler Silinsin mi?', 'Delete All Data?'),
-      body: context.tr(
-        'Bu islem geri alinamaz.',
-        'This action cannot be undone.',
-      ),
-      okText: context.tr('Tumunu Sil', 'Delete All'),
-    );
-    if (!confirm) return;
-    widget.store.clearAllRecords();
-    if (!mounted) return;
-    _snack(context.tr('Tum veriler silindi.', 'All data deleted.'));
-  }
-
-  void _openImportHelp() {
-    final lastPath = (_lastImportPath ?? '').trim();
-    final currentPath = lastPath.isEmpty
-        ? context.tr('Yok', 'None')
-        : _shortPath(lastPath);
-    showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text(
-            context.tr('Google CSV Import Yardimi', 'Google CSV Import Help'),
-          ),
-          content: Text(
-            context.tr(
-              '1) Google Password Manager export dosyasini indirin.\n2) Verileri Ice Aktar ile .csv dosyasini secin.\n3) Dosya secmek zor olursa Son Secilen Dosyadan Aktar kullanin.\n\nSon secilen dosya: $currentPath',
-              '1) Download Google Password Manager export file.\n2) Use Import Data and pick the .csv file.\n3) If browsing is difficult, use Import from Last Selected File.\n\nLast selected file: $currentPath',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(context.tr('Tamam', 'OK')),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   void _openAbout() {
@@ -1750,8 +1004,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         Text(
           context.tr(
-            'PassRoot, hassas bilgileri modern bir kasada yonetmeniz icin tasarlanmistir.',
-            'PassRoot is designed for managing sensitive data in a modern vault.',
+            'PassRoot, hassas kayitlarinizi cihazinizda sifreli olarak yonetmek icin tasarlanmistir.',
+            'PassRoot is designed for managing sensitive records with encrypted local storage.',
           ),
         ),
       ],
@@ -1765,8 +1019,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (_) => _StaticContentPage(
           title: context.tr('Gizlilik Politikasi', 'Privacy Policy'),
           body: context.tr(
-            'Veriler varsayilan olarak cihazinizda saklanir. Disa aktarma veya yedekleme dosyalarinin guvenliginden kullanici sorumludur.',
-            'Data is stored on your device by default. You are responsible for protecting exported or backup files.',
+            'Kasa verileri cihazda sifreli saklanir. Disa aktarma ve yedekleme dosyalarinin guvenliginden kullanici sorumludur.',
+            'Vault data is encrypted on device. User is responsible for securing exported and backup files.',
           ),
         ),
       ),
@@ -1780,194 +1034,158 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (_) => _StaticContentPage(
           title: context.tr('Yardim / Destek', 'Help / Support'),
           body: context.tr(
-            'Sik Sorulanlar:\n1) Guclu parola kullanin.\n2) Ayni sifreleri tekrar etmeyin.\n3) Duzenli yedek alin.\n\nDestek: support@passroot.app',
-            'FAQ:\n1) Use strong passwords.\n2) Avoid reused passwords.\n3) Create backups regularly.\n\nSupport: support@passroot.app',
+            'Destek: support@passroot.app\n\nOneri: Duzenli sifreli yedek alin ve anahtarinizi guvenli bir yerde saklayin.',
+            'Support: support@passroot.app\n\nTip: Take encrypted backups regularly and keep your key in a safe place.',
           ),
         ),
       ),
     );
   }
 
-  Future<void> _sendFeedback() async {
-    final controller = TextEditingController();
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (context) {
-        final inset = MediaQuery.of(context).viewInsets.bottom;
-        return Padding(
-          padding: EdgeInsets.fromLTRB(16, 8, 16, inset + 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: controller,
-                minLines: 3,
-                maxLines: 5,
-                decoration: InputDecoration(
-                  alignLabelWithHint: true,
-                  labelText: context.tr('Mesaj', 'Message'),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(context.tr('Gonder', 'Send')),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-    controller.dispose();
-    if (!mounted) return;
-    _snack(context.tr('Geri bildiriminiz alindi.', 'Feedback received.'));
-  }
-
   @override
   Widget build(BuildContext context) {
-    final pr = context.pr;
     return AnimatedBuilder(
       animation: Listenable.merge([widget.store, widget.settingsStore]),
       builder: (context, _) {
         final settings = widget.settingsStore.settings;
         final strongCount = widget.store.strongRecords.length;
         final weakCount = widget.store.weakRecords.length;
-        final firebaseUser = _firebaseUser;
 
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 110),
           children: [
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: pr.panelSurface,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: pr.panelBorder),
-                boxShadow: [
-                  BoxShadow(
-                    color: pr.panelShadow,
-                    blurRadius: 18,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Text(
-                context.tr(
-                  'Guvenlik, veri yonetimi ve gorunum ayarlarinizi buradan yonetin.',
-                  'Manage security, data, and appearance settings here.',
+            if (_ioBusy && (_ioStatus ?? '').trim().isNotEmpty) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
                 ),
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                decoration: BoxDecoration(
+                  color: context.pr.panelSurface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: context.pr.panelBorder),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _ioStatus!,
+                      style: TextStyle(
+                        color: context.pr.textMuted,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const LinearProgressIndicator(minHeight: 3),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
+              const SizedBox(height: 12),
+            ],
             SettingsSectionCard(
-              title: context.tr('Guvenlik', 'Security'),
+              title: context.tr('GÃ¼venlik', 'Security'),
               children: [
                 _switchTile(
                   icon: Icons.lock_outline_rounded,
                   title: context.tr('Uygulama Kilidi', 'App Lock'),
                   subtitle: context.tr(
-                    'Uygulama acilisinda kilit kullan',
-                    'Require lock on app access',
+                    settings.appLockEnabled
+                        ? 'AÃ§Ä±lÄ±ÅŸta PIN doÄŸrulamasÄ± aktif. PIN olmadan kasa aÃ§Ä±lamaz.'
+                        : 'KapalÄ±ysa aÃ§Ä±lÄ±ÅŸta PIN sorulmaz (gÃ¼venlik Ã¶nerilmez).',
+                    settings.appLockEnabled
+                        ? 'PIN verification on launch is active.'
+                        : 'If disabled, app starts without PIN prompt.',
                   ),
                   value: settings.appLockEnabled,
-                  onChanged: (value) {
-                    widget.settingsStore.setAppLockEnabled(value);
-                  },
+                  onChanged: _toggleAppLock,
                 ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.pin_outlined,
-                  title: context.tr('PIN Kodu Ayarlama', 'Set PIN Code'),
-                  subtitle: settings.hasPinCode
-                      ? context.tr('PIN aktif', 'PIN is active')
-                      : context.tr('PIN tanimlayin', 'Set a PIN'),
-                  onTap: _managePin,
-                ),
-                const SizedBox(height: 8),
-                _switchTile(
-                  icon: Icons.fingerprint_rounded,
-                  title: context.tr('Biyometrik Giris', 'Biometric Login'),
-                  subtitle: widget.settingsStore.biometricSupported
-                      ? context.tr(
-                          'Parmak izi / yuz tanima',
-                          'Fingerprint / face ID',
-                        )
-                      : context.tr(
-                          'Biyometrik destek yok',
-                          'Biometric support unavailable',
-                        ),
-                  value: settings.biometricEnabled,
-                  onChanged:
-                      settings.appLockEnabled &&
-                          widget.settingsStore.biometricSupported
-                      ? (value) =>
-                            widget.settingsStore.setBiometricEnabled(value)
-                      : null,
-                ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.timer_outlined,
-                  title: context.tr(
-                    'Otomatik Kilit Suresi',
-                    'Auto-Lock Duration',
+                if (settings.appLockEnabled) ...[
+                  const SizedBox(height: 8),
+                  _switchTile(
+                    icon: Icons.rocket_launch_outlined,
+                    title: context.tr(
+                      'AÃ§Ä±lÄ±ÅŸta Kilidi Uygula',
+                      'Enforce Lock on Launch',
+                    ),
+                    subtitle: context.tr(
+                      'Uygulama her aÃ§Ä±lÄ±ÅŸta PIN ister.',
+                      'App starts locked on every launch.',
+                    ),
+                    value: settings.lockOnAppLaunch,
+                    onChanged: widget.settingsStore.setLockOnAppLaunch,
                   ),
-                  subtitle: context.tr(
-                    'Secili: ${settings.autoLockOption.localizedLabel(context)}',
-                    'Selected: ${settings.autoLockOption.localizedLabel(context)}',
+                  const SizedBox(height: 8),
+                  _switchTile(
+                    icon: Icons.lock_clock_outlined,
+                    title: context.tr(
+                      'Arka Plandan DÃ¶nÃ¼ÅŸte Kilitle',
+                      'Lock on Resume',
+                    ),
+                    subtitle: context.tr(
+                      'Arka plandan dÃ¶nÃ¼nce, seÃ§ilen sÃ¼re aÅŸÄ±ldÄ±ysa tekrar PIN ister.',
+                      'Re-locks after returning from background based on timeout.',
+                    ),
+                    value: settings.lockOnAppResume,
+                    onChanged: widget.settingsStore.setLockOnAppResume,
                   ),
-                  onTap: _pickAutoLock,
-                ),
-                const SizedBox(height: 8),
-                _switchTile(
-                  icon: Icons.timer_off_outlined,
-                  title: context.tr(
-                    'Firebase Oturum Zaman Asimi',
-                    'Firebase Session Timeout',
-                  ),
-                  subtitle: context.tr(
-                    'Belirli sure sonra otomatik cikis yap',
-                    'Automatically sign out after inactivity',
-                  ),
-                  value: settings.firebaseSessionTimeoutEnabled,
-                  onChanged: (value) {
-                    widget.settingsStore.setFirebaseSessionTimeoutEnabled(
-                      value,
-                    );
-                  },
-                ),
-                if (settings.firebaseSessionTimeoutEnabled) ...[
                   const SizedBox(height: 8),
                   _actionTile(
                     icon: Icons.schedule_rounded,
                     title: context.tr(
-                      'Firebase Oturum Suresi',
-                      'Firebase Session Duration',
+                      'Otomatik Kilit SÃ¼resi',
+                      'Auto Lock Delay',
                     ),
                     subtitle: context.tr(
-                      'Secili: ${settings.firebaseSessionTimeoutOption.localizedLabel(context)}',
-                      'Selected: ${settings.firebaseSessionTimeoutOption.localizedLabel(context)}',
+                      'SeÃ§ili: ${settings.autoLockOption.localizedLabel(context)}',
+                      'Selected: ${settings.autoLockOption.localizedLabel(context)}',
                     ),
-                    onTap: _pickFirebaseSessionTimeout,
+                    onTap: _pickAutoLockOption,
                   ),
                 ],
                 const SizedBox(height: 8),
                 _actionTile(
-                  icon: Icons.notifications_active_outlined,
-                  title: context.tr('Guvenlik Bildirimleri', 'Security Alerts'),
-                  subtitle: context.tr(
-                    'Uyari tercihlerini duzenle',
-                    'Edit warning preferences',
+                  icon: Icons.pin_outlined,
+                  title: context.tr(
+                    widget.settingsStore.pinAvailable
+                        ? 'Uygulama PIN\'ini DeÄŸiÅŸtir'
+                        : 'Uygulama PIN\'i OluÅŸtur',
+                    widget.settingsStore.pinAvailable
+                        ? 'Change App PIN'
+                        : 'Create App PIN',
                   ),
-                  onTap: _openNotificationSettings,
+                  subtitle: widget.settingsStore.pinAvailable
+                      ? context.tr(
+                          'PIN korumasÄ± aktif. GÃ¼venliÄŸi dÃ¼zenli gÃ¼ncelleyin.',
+                          'PIN protection is active. Update it regularly.',
+                        )
+                      : context.tr(
+                          'Uygulama kilidi iÃ§in Ã¶nce PIN tanÄ±mlayÄ±n.',
+                          'Set a PIN before enabling app lock.',
+                        ),
+                  onTap: _managePin,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SettingsSectionCard(
+              title: context.tr('Gorunum', 'Appearance'),
+              children: [
+                _switchTile(
+                  icon: Icons.dark_mode_outlined,
+                  title: context.tr('Koyu Tema', 'Dark Theme'),
+                  subtitle: context.tr(
+                    'Acik/koyu tema gecisi',
+                    'Switch light/dark theme',
+                  ),
+                  value: settings.darkMode,
+                  onChanged: widget.settingsStore.setDarkMode,
+                ),
+                const SizedBox(height: 8),
+                _actionTile(
+                  icon: Icons.color_lens_outlined,
+                  title: context.tr('Tema Vurgu Rengi', 'Theme Accent'),
+                  subtitle: settings.themeAccent.localizedLabel(context),
+                  onTap: _pickThemeAccent,
                 ),
               ],
             ),
@@ -1977,7 +1195,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 _actionTile(
                   icon: Icons.backup_rounded,
-                  title: context.tr('Yedekleme', 'Backup'),
+                  title: context.tr(
+                    'Sifreli Yedek Olustur',
+                    'Create Encrypted Backup',
+                  ),
                   subtitle: settings.lastBackupAt == null
                       ? context.tr('Henuz yedek yok', 'No backup yet')
                       : context.tr(
@@ -1989,78 +1210,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
                 _actionTile(
-                  icon: Icons.cloud_upload_rounded,
-                  title: context.tr(
-                    'Firebase Buluta Yedekle',
-                    'Backup to Firebase Cloud',
-                  ),
-                  subtitle: context.tr(
-                    'Kayitlari sifreleyip Firebase buluta gonder',
-                    'Encrypt and upload records to Firebase cloud',
-                  ),
-                  onTap: _ioBusy ? null : _backupToFirebaseCloud,
-                  loading: _ioBusy,
-                ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.cloud_download_rounded,
-                  title: context.tr(
-                    'Firebase Buluttan Geri Yukle',
-                    'Restore from Firebase Cloud',
-                  ),
-                  subtitle: context.tr(
-                    'Sifreleme anahtariyla bulut yedegini geri yukle',
-                    'Restore cloud backup using encryption key',
-                  ),
-                  onTap: _ioBusy ? null : _restoreFromFirebaseCloud,
-                ),
-                const SizedBox(height: 8),
-                _actionTile(
                   icon: Icons.restore_rounded,
-                  title: context.tr('Geri Yukleme', 'Restore'),
+                  title: context.tr('Yedekten Geri Yukle', 'Restore Backup'),
                   subtitle: context.tr(
-                    'Yedekten veri yukle',
-                    'Restore data from backup',
+                    'Sifreli veya eski yedek dosyasini geri yukle',
+                    'Restore encrypted or legacy backup file',
                   ),
                   onTap: _ioBusy ? null : _restoreBackup,
                 ),
                 const SizedBox(height: 8),
                 _actionTile(
                   icon: Icons.file_upload_rounded,
-                  title: context.tr('Verileri Disa Aktar', 'Export Data'),
+                  title: context.tr('Sifreli Disa Aktar', 'Encrypted Export'),
                   subtitle: context.tr(
-                    'JSON olarak disa aktar',
-                    'Export as JSON',
+                    'Verileri sifreli dosya olarak disa aktar',
+                    'Export records as encrypted file',
                   ),
                   onTap: _ioBusy ? null : _exportData,
                 ),
                 const SizedBox(height: 8),
                 _actionTile(
                   icon: Icons.file_download_rounded,
-                  title: context.tr('Verileri Ice Aktar', 'Import Data'),
+                  title: context.tr('Dosyadan Ice Aktar', 'Import from File'),
                   subtitle: context.tr(
-                    'JSON veya Google CSV dosyasi sec',
-                    'Pick JSON or Google CSV file',
+                    'Guvenli varsayilan: yalnizca sifreli .pvault dosyasi',
+                    'Secure default: encrypted .pvault file only',
                   ),
                   onTap: _ioBusy ? null : _importData,
                 ),
                 const SizedBox(height: 8),
                 _actionTile(
-                  icon: Icons.help_outline_rounded,
-                  title: context.tr('CSV Import Yardimi', 'CSV Import Help'),
-                  subtitle: context.tr(
-                    'Indirilen dosyayi bulma adimlari',
-                    'Tips for finding downloaded file',
+                  icon: Icons.warning_amber_rounded,
+                  title: context.tr(
+                    'Gelismis: Duz Metin Import (Riskli)',
+                    'Advanced: Plaintext Import (Risky)',
                   ),
-                  onTap: _openImportHelp,
+                  subtitle: context.tr(
+                    'JSON/CSV icin cift onay gerekir. Yalnizca guvenilir dosyalarda kullanin.',
+                    'Requires double confirmation for JSON/CSV. Use only for trusted files.',
+                  ),
+                  danger: true,
+                  onTap: _ioBusy ? null : _importRiskyPlaintextData,
                 ),
                 if ((_lastImportPath ?? '').trim().isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _actionTile(
                     icon: Icons.history_rounded,
                     title: context.tr(
-                      'Son Secilen Dosyadan Aktar',
-                      'Import from Last Selected File',
+                      'Son Dosyadan Tekrar Aktar',
+                      'Import from Last File',
                     ),
                     subtitle: _shortPath(_lastImportPath!),
                     onTap: _ioBusy ? null : _importFromLastSelectedPath,
@@ -2069,213 +1267,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 _actionTile(
                   icon: Icons.delete_forever_rounded,
-                  title: context.tr('Tum Verileri Sil', 'Delete All Data'),
+                  title: context.tr('TÃ¼m Verileri Sil', 'Delete All Data'),
                   subtitle: context.tr(
-                    'Bu islem geri alinamaz',
-                    'This action cannot be undone',
+                    'Geri alÄ±namaz bir iÅŸlemdir',
+                    'This action is irreversible',
                   ),
                   danger: true,
-                  onTap: _clearAllRecords,
+                  onTap: _ioBusy ? null : _clearAllRecords,
                 ),
               ],
             ),
             const SizedBox(height: 12),
             SettingsSectionCard(
-              title: context.tr('Firebase Hesap', 'Firebase Account'),
+              title: context.tr('Uygulama Tercihleri', 'App Preferences'),
               children: [
                 _actionTile(
-                  icon: Icons.manage_accounts_rounded,
-                  title: context.tr('Hesap Durumu', 'Account Status'),
-                  subtitle: _firebaseAccountSubtitle(),
-                  onTap: null,
-                ),
-                const SizedBox(height: 8),
-                if (firebaseUser == null) ...[
-                  _actionTile(
-                    icon: Icons.g_mobiledata_rounded,
-                    title: context.tr(
-                      'Google ile Giris Yap',
-                      'Sign In with Google',
-                    ),
-                    subtitle: context.tr(
-                      'Google hesabiyla hizli giris yap',
-                      'Quick sign-in with your Google account',
-                    ),
-                    onTap: (_authBusy || _ioBusy) ? null : _signInWithGoogle,
-                    loading: _authBusy,
-                  ),
-                  const SizedBox(height: 8),
-                  _actionTile(
-                    icon: Icons.person_add_alt_1_rounded,
-                    title: context.tr(
-                      'Email ile Kayit Ol',
-                      'Register with Email',
-                    ),
-                    subtitle: context.tr(
-                      'Kalici Firebase hesabi olustur',
-                      'Create a permanent Firebase account',
-                    ),
-                    onTap: (_authBusy || _ioBusy) ? null : _registerWithEmail,
-                    loading: _authBusy,
-                  ),
-                  const SizedBox(height: 8),
-                  _actionTile(
-                    icon: Icons.login_rounded,
-                    title: context.tr(
-                      'Email ile Giris Yap',
-                      'Sign In with Email',
-                    ),
-                    subtitle: context.tr(
-                      'Mevcut email hesabina baglan',
-                      'Sign in to an existing email account',
-                    ),
-                    onTap: (_authBusy || _ioBusy) ? null : _signInWithEmail,
-                    loading: _authBusy,
-                  ),
-                ] else if (firebaseUser.isAnonymous) ...[
-                  _actionTile(
-                    icon: Icons.g_mobiledata_rounded,
-                    title: context.tr(
-                      'Anonim Hesabi Google ile Kalici Yap',
-                      'Convert Anonymous Account with Google',
-                    ),
-                    subtitle: context.tr(
-                      'Mevcut anonim hesabi Google hesaba bagla',
-                      'Link current anonymous account to Google',
-                    ),
-                    onTap: (_authBusy || _ioBusy)
-                        ? null
-                        : _linkAnonymousAccountWithGoogle,
-                    loading: _authBusy,
-                  ),
-                  const SizedBox(height: 8),
-                  _actionTile(
-                    icon: Icons.upgrade_rounded,
-                    title: context.tr(
-                      'Anonim Hesabi Kalici Yap',
-                      'Convert Anonymous Account',
-                    ),
-                    subtitle: context.tr(
-                      'Mevcut anonim hesabi email ile kalici yap',
-                      'Convert current anonymous account to email account',
-                    ),
-                    onTap: (_authBusy || _ioBusy)
-                        ? null
-                        : _linkAnonymousAccountWithEmail,
-                    loading: _authBusy,
-                  ),
-                  const SizedBox(height: 8),
-                  _actionTile(
-                    icon: Icons.g_mobiledata_rounded,
-                    title: context.tr(
-                      'Google ile Giris Yap',
-                      'Sign In with Google',
-                    ),
-                    subtitle: context.tr(
-                      'Diger bir Google hesabina gecis yap',
-                      'Switch to another Google account',
-                    ),
-                    onTap: (_authBusy || _ioBusy) ? null : _signInWithGoogle,
-                    loading: _authBusy,
-                  ),
-                  const SizedBox(height: 8),
-                  _actionTile(
-                    icon: Icons.login_rounded,
-                    title: context.tr(
-                      'Email ile Giris Yap',
-                      'Sign In with Email',
-                    ),
-                    subtitle: context.tr(
-                      'Diger bir email hesabina gecis yap',
-                      'Switch to another email account',
-                    ),
-                    onTap: (_authBusy || _ioBusy) ? null : _signInWithEmail,
-                    loading: _authBusy,
-                  ),
-                ] else ...[
-                  _actionTile(
-                    icon: Icons.logout_rounded,
-                    title: context.tr('Firebase Hesaptan Cikis', 'Sign Out'),
-                    subtitle: context.tr(
-                      'Email hesabindan cikis yap',
-                      'Sign out from current email account',
-                    ),
-                    onTap: (_authBusy || _ioBusy) ? null : _signOutFromFirebase,
-                    loading: _authBusy,
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 12),
-            SettingsSectionCard(
-              title: context.tr('Gorunum', 'Appearance'),
-              children: [
-                _switchTile(
-                  icon: Icons.dark_mode_outlined,
-                  title: context.tr('Karanlik Mod', 'Dark Mode'),
-                  subtitle: context.tr('Tema gorunumu', 'Theme appearance'),
-                  value: settings.darkMode,
-                  onChanged: (value) {
-                    widget.settingsStore.setDarkMode(value);
-                  },
-                ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.palette_outlined,
-                  title: context.tr('Tema Rengi', 'Theme Color'),
-                  subtitle: context.tr(
-                    'Secili: ${settings.themeAccent.localizedLabel(context)}',
-                    'Selected: ${settings.themeAccent.localizedLabel(context)}',
-                  ),
-                  onTap: _pickThemeAccent,
-                ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.view_quilt_outlined,
-                  title: context.tr('Kart Gorunumu', 'Card Appearance'),
-                  subtitle: context.tr(
-                    'Secili: ${settings.cardStyle.localizedLabel(context)}',
-                    'Selected: ${settings.cardStyle.localizedLabel(context)}',
-                  ),
+                  icon: Icons.view_compact_alt_outlined,
+                  title: context.tr('Kasa Kart Gorunumu', 'Vault Card Style'),
+                  subtitle: settings.cardStyle.localizedLabel(context),
                   onTap: _pickCardStyle,
                 ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            SettingsSectionCard(
-              title: context.tr('Genel', 'General'),
-              children: [
+                const SizedBox(height: 8),
                 _actionTile(
                   icon: Icons.language_rounded,
-                  title: context.tr('Dil Secimi', 'Language'),
-                  subtitle: context.tr(
-                    'Secili: ${settings.language.localizedLabel(context)}',
-                    'Selected: ${settings.language.localizedLabel(context)}',
-                  ),
+                  title: context.tr('Dil', 'Language'),
+                  subtitle: settings.language.localizedLabel(context),
                   onTap: _pickLanguage,
                 ),
                 const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.password_rounded,
-                  title: context.tr(
-                    'Sifre Uretici Ayarlari',
-                    'Password Generator Settings',
+                _summaryRow(
+                  context.tr('Toplam Kayit', 'Total Records'),
+                  '${widget.store.totalCount}',
+                ),
+                _summaryRow(
+                  context.tr('Parola Durumu', 'Password Summary'),
+                  context.tr(
+                    '$strongCount guclu / $weakCount zayif',
+                    '$strongCount strong / $weakCount weak',
                   ),
-                  subtitle: context.tr('Parola kurallari', 'Password rules'),
-                  onTap: _openPasswordGeneratorSettings,
                 ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.info_outline_rounded,
-                  title: context.tr('Hakkinda', 'About'),
-                  subtitle: context.tr('Uygulama bilgisi', 'About the app'),
-                  onTap: _openAbout,
-                ),
-                const SizedBox(height: 8),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SettingsSectionCard(
+              title: context.tr('Hakkinda', 'About'),
+              children: [
                 _actionTile(
                   icon: Icons.privacy_tip_outlined,
                   title: context.tr('Gizlilik Politikasi', 'Privacy Policy'),
-                  subtitle: context.tr('Veri kullanim bilgisi', 'Data policy'),
+                  subtitle: context.tr(
+                    'Veri kullanimi ve guvenlik',
+                    'Data use and security',
+                  ),
                   onTap: _openPrivacyPolicy,
                 ),
                 const SizedBox(height: 8),
@@ -2287,43 +1330,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
                 _actionTile(
-                  icon: Icons.feedback_outlined,
-                  title: context.tr('Geri Bildirim Gonder', 'Send Feedback'),
-                  subtitle: context.tr('Mesajini ilet', 'Share your feedback'),
-                  onTap: _sendFeedback,
-                ),
-                const SizedBox(height: 8),
-                _actionTile(
-                  icon: Icons.verified_rounded,
-                  title: context.tr('Surum Bilgisi', 'App Version'),
+                  icon: Icons.info_outline_rounded,
+                  title: context.tr('Surum Bilgisi', 'Version'),
                   subtitle: _appVersion,
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            SettingsSectionCard(
-              title: context.tr('Kullanici Bilgileri', 'User Information'),
-              children: [
-                _summaryRow(
-                  context.tr('Toplam Kayit', 'Total Records'),
-                  '${widget.store.totalCount}',
-                ),
-                _summaryRow(
-                  context.tr('Favori Kayit', 'Favorite Records'),
-                  '${widget.store.favoriteCount}',
-                ),
-                _summaryRow(
-                  context.tr('Parola Durumu', 'Password Summary'),
-                  context.tr(
-                    '$strongCount guclu / $weakCount zayif',
-                    '$strongCount strong / $weakCount weak',
-                  ),
+                  onTap: _openAbout,
                 ),
               ],
             ),
           ],
         );
       },
+    );
+  }
+
+  Widget _summaryRow(String label, String value) {
+    final pr = context.pr;
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: textTheme.bodyMedium?.copyWith(
+                color: pr.textMuted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Text(
+            value,
+            style: textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _switchTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    final pr = context.pr;
+    final textTheme = Theme.of(context).textTheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: pr.softFill,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: pr.panelBorder),
+      ),
+      child: SwitchListTile.adaptive(
+        value: value,
+        secondary: Icon(icon),
+        title: Text(
+          title,
+          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        subtitle: Text(subtitle),
+        onChanged: onChanged,
+      ),
     );
   }
 
@@ -2337,158 +1406,57 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }) {
     final pr = context.pr;
     final scheme = Theme.of(context).colorScheme;
-    final iconColor = danger ? scheme.error : scheme.primary;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
-        child: Ink(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: pr.softFill,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: pr.panelBorder),
+    final textTheme = Theme.of(context).textTheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: danger ? pr.dangerSoft : pr.softFill,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: danger
+                ? scheme.error.withValues(alpha: 0.28)
+                : pr.panelBorder,
           ),
-          child: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(icon, size: 18, color: iconColor),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Icon(icon, color: danger ? scheme.error : null),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: danger ? scheme.error : null,
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        color: pr.textMuted,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: textTheme.bodySmall?.copyWith(color: pr.textMuted),
+                  ),
+                ],
               ),
-              if (loading)
-                const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else if (onTap != null)
-                Icon(Icons.chevron_right_rounded, color: pr.iconMuted),
-            ],
-          ),
+            ),
+            if (loading)
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              const Icon(Icons.chevron_right_rounded),
+          ],
         ),
       ),
     );
   }
-
-  Widget _switchTile({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required bool value,
-    required ValueChanged<bool>? onChanged,
-  }) {
-    final pr = context.pr;
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: pr.softFill,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: pr.panelBorder),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: scheme.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, size: 18, color: scheme.primary),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: pr.textMuted,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Switch.adaptive(value: value, onChanged: onChanged),
-        ],
-      ),
-    );
-  }
-
-  Widget _summaryRow(String label, String value) {
-    final pr = context.pr;
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      decoration: BoxDecoration(
-        color: pr.softFill,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: pr.panelBorder),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            value,
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              color: scheme.onSurface,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EmailPasswordPayload {
-  const _EmailPasswordPayload({required this.email, required this.password});
-
-  final String email;
-  final String password;
 }
 
 class _StaticContentPage extends StatelessWidget {
@@ -2499,25 +1467,18 @@ class _StaticContentPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pr = context.pr;
     return Scaffold(
       appBar: AppBar(title: Text(title)),
-      body: ListView(
+      body: Padding(
         padding: const EdgeInsets.all(16),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: pr.panelSurface,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: pr.panelBorder),
-            ),
-            child: Text(
-              body,
-              style: const TextStyle(height: 1.5, fontWeight: FontWeight.w500),
-            ),
+        child: Text(
+          body,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.w500,
+            height: 1.5,
           ),
-        ],
+        ),
       ),
     );
   }

@@ -1,1 +1,5 @@
 #include "Generated.xcconfig"
+#include? "ReleaseSecrets.xcconfig"
+
+APP_DEVELOPMENT_TEAM=
+CODE_SIGN_STYLE=Automatic

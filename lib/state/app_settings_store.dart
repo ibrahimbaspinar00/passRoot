@@ -1,24 +1,28 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
+import '../services/pin_security_service.dart';
+import '../utils/app_logger.dart';
 
 class AppSettingsStore extends ChangeNotifier {
   static const String _storageKey = 'passroot_app_settings_v1';
 
-  final LocalAuthentication _localAuth = LocalAuthentication();
+  AppSettingsStore({PinSecurityService? pinSecurityService})
+    : _pinSecurityService = pinSecurityService ?? PinSecurityService();
+
+  final PinSecurityService _pinSecurityService;
 
   AppSettings _settings = const AppSettings();
   bool _loaded = false;
-  bool _biometricSupported = false;
+  bool _pinAvailable = false;
 
   AppSettings get settings => _settings;
   bool get loaded => _loaded;
-  bool get biometricSupported => _biometricSupported;
+  bool get pinAvailable => _pinAvailable;
+  PinSecurityService get pinSecurityService => _pinSecurityService;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -31,28 +35,58 @@ class AppSettingsStore extends ChangeNotifier {
         } else if (decoded is Map) {
           _settings = AppSettings.fromJson(decoded.cast<String, dynamic>());
         }
-      } catch (_) {
+      } on FormatException catch (error, stackTrace) {
+        AppLogger.debug(
+          'AppSettingsStore',
+          'Ayarlar çözümlenemedi',
+          error: error,
+          stackTrace: stackTrace,
+        );
         _settings = const AppSettings();
       }
     }
 
-    _loaded = true;
-    notifyListeners();
-    unawaited(refreshBiometricCapability());
-  }
-
-  Future<void> refreshBiometricCapability({bool notify = true}) async {
     try {
-      final supported = await _localAuth.isDeviceSupported();
-      final canCheck = await _localAuth.canCheckBiometrics;
-      final biometrics = await _localAuth.getAvailableBiometrics();
-      _biometricSupported = supported && canCheck && biometrics.isNotEmpty;
-    } catch (_) {
-      _biometricSupported = false;
+      await _pinSecurityService.migrateLegacyPin(_settings.pinCode);
+    } on Exception catch (error, stackTrace) {
+      AppLogger.debug(
+        'AppSettingsStore',
+        'Legacy PIN taşıma hatası',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
 
-    if (!_biometricSupported && _settings.biometricEnabled) {
-      _settings = _settings.copyWith(biometricEnabled: false);
+    await refreshPinAvailability(notify: false);
+
+    _loaded = true;
+    notifyListeners();
+  }
+
+  Future<void> refreshPinAvailability({bool notify = true}) async {
+    bool hasPin = false;
+    try {
+      hasPin = await _pinSecurityService.hasPin();
+    } on Exception catch (error, stackTrace) {
+      AppLogger.debug(
+        'AppSettingsStore',
+        'PIN erişim hatası',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      hasPin = false;
+    }
+
+    final shouldPersistSettings =
+        _settings.pinEnabled != hasPin || (_settings.pinCode ?? '').isNotEmpty;
+    _pinAvailable = hasPin;
+
+    if (shouldPersistSettings) {
+      _settings = _settings.copyWith(pinEnabled: hasPin, pinCode: null);
+      await _persist();
+    }
+    final lockChanged = await _ensureLockConfigurationConsistency();
+    if (lockChanged) {
       await _persist();
     }
 
@@ -74,40 +108,46 @@ class AppSettingsStore extends ChangeNotifier {
   }
 
   Future<void> setAppLockEnabled(bool value) async {
-    final next = value
-        ? _settings
-        : _settings.copyWith(biometricEnabled: false);
-    await _update(next.copyWith(appLockEnabled: value));
+    if (value) {
+      await refreshPinAvailability(notify: false);
+      if (!_pinAvailable) {
+        return;
+      }
+    }
+    await _update(_settings.copyWith(appLockEnabled: value));
+  }
+
+  Future<void> setLockOnAppLaunch(bool value) async {
+    await _update(_settings.copyWith(lockOnAppLaunch: value));
+  }
+
+  Future<void> setLockOnAppResume(bool value) async {
+    await _update(_settings.copyWith(lockOnAppResume: value));
   }
 
   Future<void> setPinCode(String pin) async {
-    await _update(_settings.copyWith(pinCode: pin.trim()));
+    await _pinSecurityService.setPin(pin.trim());
+    _pinAvailable = true;
+    await _update(_settings.copyWith(pinEnabled: true, pinCode: null));
   }
 
   Future<void> clearPinCode() async {
-    await _update(_settings.copyWith(pinCode: null));
+    await _pinSecurityService.clearPin();
+    _pinAvailable = false;
+    await _update(_settings.copyWith(pinEnabled: false, pinCode: null));
   }
 
-  Future<void> setBiometricEnabled(bool value) async {
-    if (value) {
-      await refreshBiometricCapability();
-      if (!_biometricSupported) return;
-    }
-    await _update(_settings.copyWith(biometricEnabled: value));
+  Future<bool> verifyPin(String pin) async {
+    final result = await _pinSecurityService.verifyPinDetailed(pin);
+    return result.success;
+  }
+
+  Future<PinVerificationResult> verifyPinDetailed(String pin) {
+    return _pinSecurityService.verifyPinDetailed(pin);
   }
 
   Future<void> setAutoLockOption(AutoLockOption value) async {
     await _update(_settings.copyWith(autoLockOption: value));
-  }
-
-  Future<void> setFirebaseSessionTimeoutEnabled(bool value) async {
-    await _update(_settings.copyWith(firebaseSessionTimeoutEnabled: value));
-  }
-
-  Future<void> setFirebaseSessionTimeoutOption(
-    FirebaseSessionTimeoutOption value,
-  ) async {
-    await _update(_settings.copyWith(firebaseSessionTimeoutOption: value));
   }
 
   Future<void> setLanguage(AppLanguage language) async {
@@ -134,6 +174,7 @@ class AppSettingsStore extends ChangeNotifier {
 
   Future<void> _update(AppSettings value) async {
     _settings = value;
+    await _ensureLockConfigurationConsistency();
     await _persist();
     notifyListeners();
   }
@@ -141,5 +182,25 @@ class AppSettingsStore extends ChangeNotifier {
   Future<void> _persist() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_storageKey, jsonEncode(_settings.toJson()));
+  }
+
+  Future<bool> _ensureLockConfigurationConsistency() async {
+    var changed = false;
+    var next = _settings;
+
+    if (!_pinAvailable && !next.appLockEnabled) {
+      next = next.copyWith(appLockEnabled: true);
+      changed = true;
+    }
+
+    if (!_pinAvailable && !next.lockOnAppLaunch) {
+      next = next.copyWith(lockOnAppLaunch: true);
+      changed = true;
+    }
+
+    if (changed) {
+      _settings = next;
+    }
+    return changed;
   }
 }

@@ -55,18 +55,49 @@ class _VaultRecordCardState extends State<VaultRecordCard> {
     return lower.contains('kritik') || lower.contains('critical');
   }
 
+  String _securityLabel(VaultRecord record) {
+    if (record.securityTag.trim().isNotEmpty) {
+      return record.securityTag.trim();
+    }
+    if (record.securityNote.trim().isNotEmpty) {
+      return record.securityNote.trim();
+    }
+    return '';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
     final palette = _VaultCardPalette.of(context);
     final compact = widget.compact;
     final radius = compact ? 17.0 : 20.0;
     final outerPadding = compact ? 13.0 : 15.0;
-    final titleSize = compact ? 14.8 : 16.6;
-
-    final buttonTextStyle = TextStyle(
+    final titleStyle = textTheme.titleMedium?.copyWith(
+      color: palette.titleColor,
       fontWeight: FontWeight.w700,
-      fontSize: compact ? 13 : 14,
+      fontSize: compact ? 14.8 : 16.4,
+      letterSpacing: 0.1,
     );
+    final subtitleStyle = textTheme.bodySmall?.copyWith(
+      color: palette.subtitleColor,
+      fontWeight: FontWeight.w500,
+      fontSize: compact ? 12.6 : 13.4,
+    );
+    final passwordStyle = textTheme.titleSmall?.copyWith(
+      color: palette.inputTextColor,
+      fontWeight: FontWeight.w700,
+      letterSpacing: 0.2,
+      fontSize: compact ? 15.1 : 15.7,
+    );
+    final securityLabel = _securityLabel(widget.record);
+    final hasCriticalSecurity = _isCriticalTag(securityLabel);
+
+    final buttonTextStyle =
+        textTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w700,
+          fontSize: compact ? 13 : 14,
+        ) ??
+        TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 13 : 14);
 
     return Material(
       color: Colors.transparent,
@@ -105,23 +136,14 @@ class _VaultRecordCardState extends State<VaultRecordCard> {
                             widget.record.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: palette.titleColor,
-                              fontWeight: FontWeight.w700,
-                              fontSize: titleSize,
-                              letterSpacing: 0.1,
-                            ),
+                            style: titleStyle,
                           ),
                           const SizedBox(height: 2),
                           Text(
                             widget.record.subtitle,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: palette.subtitleColor,
-                              fontWeight: FontWeight.w500,
-                              fontSize: compact ? 12.7 : 13.6,
-                            ),
+                            style: subtitleStyle,
                           ),
                         ],
                       ),
@@ -186,12 +208,7 @@ class _VaultRecordCardState extends State<VaultRecordCard> {
                               : widget.maskedPassword,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: palette.inputTextColor,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.2,
-                            fontSize: compact ? 15.2 : 15.8,
-                          ),
+                          style: passwordStyle,
                         ),
                       ),
                       IconButton(
@@ -215,44 +232,38 @@ class _VaultRecordCardState extends State<VaultRecordCard> {
                     ],
                   ),
                 ),
-                if (widget.record.securityTag.trim().isNotEmpty ||
-                    widget.record.securityNote.trim().isNotEmpty) ...[
-                  SizedBox(height: compact ? 8 : 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      if (widget.record.securityTag.trim().isNotEmpty)
-                        _VaultTagChip(
-                          text: widget.record.securityTag,
-                          textColor: _isCriticalTag(widget.record.securityTag)
-                              ? palette.criticalTagText
-                              : palette.tagText,
-                          backgroundColor:
-                              _isCriticalTag(widget.record.securityTag)
-                              ? palette.criticalTagBackground
-                              : palette.tagBackground,
-                          borderColor: _isCriticalTag(widget.record.securityTag)
-                              ? palette.criticalTagBorder
-                              : palette.tagBorder,
-                          compact: compact,
-                          isStrongWeight: true,
+                SizedBox(height: compact ? 8 : 10),
+                SizedBox(
+                  height: compact ? 22 : 24,
+                  child: securityLabel.isEmpty
+                      ? const SizedBox.shrink()
+                      : Align(
+                          alignment: Alignment.centerLeft,
+                          child: _VaultTagChip(
+                            text: securityLabel,
+                            textColor: hasCriticalSecurity
+                                ? palette.criticalTagText
+                                : palette.tagText,
+                            backgroundColor: hasCriticalSecurity
+                                ? palette.criticalTagBackground
+                                : palette.tagBackground,
+                            borderColor: hasCriticalSecurity
+                                ? palette.criticalTagBorder
+                                : palette.tagBorder,
+                            compact: compact,
+                            isStrongWeight: true,
+                          ),
                         ),
-                      if (widget.record.securityNote.trim().isNotEmpty)
-                        _VaultTagChip(
-                          text: widget.record.securityNote,
-                          textColor: palette.noteChipText,
-                          backgroundColor: palette.noteChipBackground,
-                          borderColor: palette.noteChipBorder,
-                          compact: compact,
-                        ),
-                    ],
-                  ),
-                ],
+                ),
                 SizedBox(height: compact ? 10 : 12),
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    Expanded(
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minWidth: compact ? 120 : 132,
+                      ),
                       child: OutlinedButton.icon(
                         onPressed: widget.onEdit,
                         style: OutlinedButton.styleFrom(
@@ -268,8 +279,10 @@ class _VaultRecordCardState extends State<VaultRecordCard> {
                         label: Text(context.tr('Duzenle', 'Edit')),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minWidth: compact ? 120 : 132,
+                      ),
                       child: OutlinedButton.icon(
                         onPressed: widget.onDelete,
                         style: OutlinedButton.styleFrom(
@@ -316,6 +329,11 @@ class _VaultInputLikeField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.bodyMedium?.copyWith(
+      color: textColor,
+      fontWeight: FontWeight.w600,
+      fontSize: compact ? 13.6 : 14.2,
+    );
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: compact ? 11 : 12,
@@ -330,11 +348,7 @@ class _VaultInputLikeField extends StatelessWidget {
         text,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: textColor,
-          fontWeight: FontWeight.w600,
-          fontSize: compact ? 13.7 : 14.3,
-        ),
+        style: style,
       ),
     );
   }
@@ -359,6 +373,11 @@ class _VaultTagChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.labelMedium?.copyWith(
+      color: textColor,
+      fontSize: compact ? 11.3 : 12.1,
+      fontWeight: isStrongWeight ? FontWeight.w700 : FontWeight.w600,
+    );
     return Container(
       constraints: const BoxConstraints(maxWidth: 280),
       padding: EdgeInsets.symmetric(
@@ -374,11 +393,7 @@ class _VaultTagChip extends StatelessWidget {
         text,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: textColor,
-          fontSize: compact ? 11.3 : 12.1,
-          fontWeight: isStrongWeight ? FontWeight.w700 : FontWeight.w600,
-        ),
+        style: style,
       ),
     );
   }
@@ -388,7 +403,6 @@ class _VaultTagChip extends StatelessWidget {
 class _VaultCardPalette {
   const _VaultCardPalette({
     required this.cardBackground,
-    required this.cardGradient,
     required this.cardBorder,
     required this.cardShadows,
     required this.titleColor,
@@ -422,7 +436,6 @@ class _VaultCardPalette {
   });
 
   final Color cardBackground;
-  final Gradient? cardGradient;
   final Color cardBorder;
   final List<BoxShadow> cardShadows;
   final Color titleColor;
@@ -462,34 +475,21 @@ class _VaultCardPalette {
 
     if (isDark) {
       final surface = Color.alphaBlend(
-        scheme.primary.withValues(alpha: 0.07),
+        scheme.primary.withValues(alpha: 0.045),
         pr.panelSurface,
       );
       return _VaultCardPalette(
         cardBackground: surface,
-        cardGradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[
-            Color.alphaBlend(scheme.primary.withValues(alpha: 0.08), surface),
-            Color.alphaBlend(const Color(0x14000000), surface),
-          ],
-        ),
         cardBorder: Color.alphaBlend(
-          scheme.primary.withValues(alpha: 0.14),
+          scheme.primary.withValues(alpha: 0.12),
           pr.panelBorder,
         ),
         cardShadows: <BoxShadow>[
+          // Performance: keep only a single lightweight shadow layer.
           BoxShadow(
-            color: const Color(0xFF03070D).withValues(alpha: 0.5),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
-          ),
-          BoxShadow(
-            color: scheme.primary.withValues(alpha: 0.16),
-            blurRadius: 16,
-            spreadRadius: -6,
-            offset: const Offset(0, 4),
+            color: const Color(0xFF03070D).withValues(alpha: 0.28),
+            blurRadius: 9,
+            offset: const Offset(0, 3),
           ),
         ],
         titleColor: theme.colorScheme.onSurface,
@@ -546,17 +546,12 @@ class _VaultCardPalette {
 
     return _VaultCardPalette(
       cardBackground: const Color(0xFFFDFEFF),
-      cardGradient: const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: <Color>[Color(0xFFFDFEFF), Color(0xFFF8FBFF)],
-      ),
       cardBorder: const Color(0xFFE2EAF4),
       cardShadows: const <BoxShadow>[
         BoxShadow(
-          color: Color(0x14455F78),
-          blurRadius: 16,
-          offset: Offset(0, 6),
+          color: Color(0x10455F78),
+          blurRadius: 8,
+          offset: Offset(0, 3),
         ),
       ],
       titleColor: const Color(0xFF172432),
@@ -593,7 +588,6 @@ class _VaultCardPalette {
   BoxDecoration cardDecoration({required double radius}) {
     return BoxDecoration(
       color: cardBackground,
-      gradient: cardGradient,
       borderRadius: BorderRadius.circular(radius),
       border: Border.all(color: cardBorder),
       boxShadow: cardShadows,

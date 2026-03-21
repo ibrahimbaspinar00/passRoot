@@ -23,6 +23,7 @@ class DashboardStatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
     final pr = context.pr;
     return Material(
       color: pr.panelSurface,
@@ -77,7 +78,7 @@ class DashboardStatCard extends StatelessWidget {
                 const SizedBox(height: 14),
                 Text(
                   title,
-                  style: TextStyle(
+                  style: textTheme.bodyMedium?.copyWith(
                     color: pr.textMuted,
                     fontWeight: FontWeight.w600,
                   ),
@@ -90,9 +91,8 @@ class DashboardStatCard extends StatelessWidget {
                   child: Text(
                     value,
                     key: ValueKey<String>(value),
-                    style: TextStyle(
-                      fontSize: 30,
-                      fontWeight: FontWeight.w800,
+                    style: textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
                       color: theme.colorScheme.onSurface,
                     ),
                   ),
@@ -100,7 +100,7 @@ class DashboardStatCard extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   subtitle,
-                  style: TextStyle(
+                  style: textTheme.bodySmall?.copyWith(
                     color: pr.textMuted,
                     fontWeight: FontWeight.w500,
                   ),

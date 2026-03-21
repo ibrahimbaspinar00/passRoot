@@ -1,32 +1,20 @@
-# passroot
+# PassRoot Vault
 
-A new Flutter project.
+PassRoot Vault is a local-first secure vault app built with Flutter.
 
-## Getting Started
+## Release Signing
 
-This project is a starting point for a Flutter application.
+Release artifacts are intentionally blocked unless real signing is configured.
+Debug signing fallback is disabled.
 
-A few resources to get you started if this is your first Flutter project:
+### Android - Signed AAB
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Use one of the following:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+1. `android/key.properties` (local machine)
+2. Environment variables (CI/CD)
 
-## Android Release Signing
-
-`android/app/build.gradle.kts` now reads signing values from `android/key.properties`.
-If this file does not exist, release builds fallback to debug signing.
-
-Create keystore:
-
-```powershell
-keytool -genkey -v -keystore C:\keys\passroot-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias passroot
-```
-
-Create `android/key.properties`:
+`android/key.properties` example:
 
 ```properties
 storeFile=C:\\keys\\passroot-release.jks
@@ -35,8 +23,43 @@ keyAlias=passroot
 keyPassword=YOUR_KEY_PASSWORD
 ```
 
-Build signed release:
+CI/CD environment variables:
+
+```bash
+ANDROID_KEYSTORE_PATH=/path/to/passroot-release.jks
+# or
+ANDROID_KEYSTORE_BASE64=<base64-of-keystore>
+ANDROID_KEYSTORE_EXT=jks
+
+ANDROID_KEYSTORE_PASSWORD=...
+ANDROID_KEY_ALIAS=...
+ANDROID_KEY_PASSWORD=...
+```
+
+Build:
 
 ```powershell
 flutter build appbundle --release
 ```
+
+### iOS - Archive/TestFlight
+
+Use Xcode signing (Apple Developer Program required):
+
+1. Copy `ios/Flutter/ReleaseSecrets.xcconfig.example` to `ios/Flutter/ReleaseSecrets.xcconfig`
+2. Set `APP_DEVELOPMENT_TEAM`
+3. Open `ios/Runner.xcworkspace` in Xcode and confirm Signing & Capabilities
+4. Build/archive:
+
+```bash
+flutter build ios --release
+```
+
+Then archive with Xcode Organizer for TestFlight upload.
+
+## Security Notes
+
+- Vault data is stored encrypted on device.
+- App lock is PIN-first by default.
+- Encrypted backup/import is the recommended path.
+- Plain JSON/CSV import is intentionally marked as advanced/high-risk.

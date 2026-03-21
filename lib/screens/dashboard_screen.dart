@@ -126,7 +126,9 @@ class DashboardScreen extends StatelessWidget {
                       'En Cok Kullanilan Kategoriler',
                       'Top Categories',
                     ),
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const SizedBox(height: 10),
                   if (topCategories.isEmpty)
@@ -135,7 +137,9 @@ class DashboardScreen extends StatelessWidget {
                         'Kategori dagilimi icin kayit ekleyin.',
                         'Add records to see category distribution.',
                       ),
-                      style: TextStyle(color: pr.textMuted),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.copyWith(color: pr.textMuted),
                     )
                   else
                     Wrap(
@@ -206,7 +210,7 @@ class _DashboardHeader extends StatelessWidget {
         children: [
           Text(
             context.tr('Hos geldiniz', 'Welcome'),
-            style: TextStyle(
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
               color: heroMutedTextColor,
               fontWeight: FontWeight.w700,
             ),
@@ -214,10 +218,9 @@ class _DashboardHeader extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             'PassRoot Security Dashboard',
-            style: TextStyle(
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
               color: heroTextColor,
-              fontSize: 22,
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w700,
             ),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
@@ -240,7 +243,7 @@ class _DashboardHeader extends StatelessWidget {
                       '$totalCount hassas kayit aktif olarak izleniyor',
                       '$totalCount secure records are actively monitored',
                     ),
-                    style: TextStyle(
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: heroTextColor,
                       fontWeight: FontWeight.w600,
                     ),

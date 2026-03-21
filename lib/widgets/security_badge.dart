@@ -41,10 +41,9 @@ class SecurityBadge extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: TextStyle(
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
           color: textColor,
           fontWeight: FontWeight.w700,
-          fontSize: 12,
         ),
       ),
     );

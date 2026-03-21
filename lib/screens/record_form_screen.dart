@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -12,7 +14,11 @@ import '../widgets/record_form/record_form_section_card.dart';
 import '../widgets/security_badge.dart';
 
 class RecordFormScreen extends StatefulWidget {
-  const RecordFormScreen({super.key, this.initial, required this.settingsStore});
+  const RecordFormScreen({
+    super.key,
+    this.initial,
+    required this.settingsStore,
+  });
 
   final VaultRecord? initial;
   final AppSettingsStore settingsStore;
@@ -71,6 +77,64 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
 
   PasswordAnalysis get _analysis => analyzePassword(_passwordController.text);
 
+  String _accountLabel(BuildContext context) {
+    return switch (_selectedCategory) {
+      RecordCategory.bank => context.tr('Hesap No / IBAN', 'Account No / IBAN'),
+      RecordCategory.cardInfo => context.tr(
+        'Kart No / Kullanici',
+        'Card No / Holder',
+      ),
+      RecordCategory.email => context.tr('E-posta Adresi', 'E-mail Address'),
+      _ => context.tr('Kullanici Adi / E-posta', 'Username / E-mail'),
+    };
+  }
+
+  String _accountHint(BuildContext context) {
+    return switch (_selectedCategory) {
+      RecordCategory.bank => 'TR00 0000 0000 0000 0000 0000 00',
+      RecordCategory.cardInfo => '**** **** **** 1234',
+      RecordCategory.email => 'you@example.com',
+      _ => 'ibrahim@example.com',
+    };
+  }
+
+  String _platformLabel(BuildContext context) {
+    return switch (_selectedCategory) {
+      RecordCategory.bank => context.tr('Banka / Subesi', 'Bank / Branch'),
+      RecordCategory.cardInfo => context.tr('Kart Saglayici', 'Card Provider'),
+      RecordCategory.licenseKey => context.tr(
+        'Urun / Servis',
+        'Product / Service',
+      ),
+      RecordCategory.secureNote => context.tr('Kaynak', 'Source'),
+      _ => context.tr('Web Sitesi veya Platform', 'Website or Platform'),
+    };
+  }
+
+  String _platformHint(BuildContext context) {
+    return switch (_selectedCategory) {
+      RecordCategory.bank => 'Akbank',
+      RecordCategory.cardInfo => 'Visa / MasterCard',
+      RecordCategory.licenseKey => 'Adobe / JetBrains / Microsoft',
+      RecordCategory.secureNote => context.tr(
+        'Orn: VPN notu, kasa notu',
+        'e.g. VPN note, private memo',
+      ),
+      _ => context.tr(
+        'Orn: https://example.com veya Steam',
+        'e.g. https://example.com or Steam',
+      ),
+    };
+  }
+
+  String _secretLabel(BuildContext context) {
+    return switch (_selectedCategory) {
+      RecordCategory.licenseKey => context.tr('Lisans Anahtari', 'License Key'),
+      RecordCategory.secureNote => context.tr('Gizli Icerik', 'Secret Value'),
+      _ => context.tr('Sifre', 'Password'),
+    };
+  }
+
   Future<void> _generatePassword() async {
     final generated = generatePassword(
       widget.settingsStore.settings.passwordGenerator,
@@ -79,6 +143,7 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
       _passwordController.text = generated;
     });
     await Clipboard.setData(ClipboardData(text: generated));
+    unawaited(_clearClipboardIfUnchanged(generated));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -109,10 +174,22 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
       return;
     }
     await Clipboard.setData(ClipboardData(text: value));
+    unawaited(_clearClipboardIfUnchanged(value));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(context.tr('Sifre kopyalandi.', 'Password copied.'))),
+      SnackBar(
+        content: Text(context.tr('Sifre kopyalandi.', 'Password copied.')),
+      ),
     );
+  }
+
+  Future<void> _clearClipboardIfUnchanged(String copiedValue) async {
+    await Future<void>.delayed(const Duration(seconds: 45));
+    final current = await Clipboard.getData('text/plain');
+    if ((current?.text ?? '') != copiedValue) {
+      return;
+    }
+    await Clipboard.setData(const ClipboardData(text: ''));
   }
 
   Future<void> _save() async {
@@ -263,11 +340,8 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                   controller: _accountController,
                   textInputAction: TextInputAction.next,
                   decoration: InputDecoration(
-                    labelText: context.tr(
-                      'Kullanici Adi / E-posta',
-                      'Username / E-mail',
-                    ),
-                    hintText: 'ibrahim@example.com',
+                    labelText: _accountLabel(context),
+                    hintText: _accountHint(context),
                     prefixIcon: const Icon(Icons.person_rounded),
                   ),
                   validator: (value) {
@@ -287,7 +361,7 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                   obscureText: !_passwordVisible,
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
-                    labelText: context.tr('Sifre', 'Password'),
+                    labelText: _secretLabel(context),
                     prefixIcon: const Icon(Icons.key_rounded),
                     suffixIcon: IconButton(
                       tooltip: context.tr(
@@ -309,10 +383,16 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                   validator: (value) {
                     final text = (value ?? '').trim();
                     if (text.isEmpty) {
-                      return context.tr('Sifre zorunludur.', 'Password is required.');
+                      return context.tr(
+                        'Sifre zorunludur.',
+                        'Password is required.',
+                      );
                     }
                     if (text.length < 4) {
-                      return context.tr('En az 4 karakter girin.', 'Use at least 4 characters.');
+                      return context.tr(
+                        'En az 4 karakter girin.',
+                        'Use at least 4 characters.',
+                      );
                     }
                     return null;
                   },
@@ -376,14 +456,8 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                   controller: _platformController,
                   textInputAction: TextInputAction.next,
                   decoration: InputDecoration(
-                    labelText: context.tr(
-                      'Web Sitesi veya Platform',
-                      'Website or Platform',
-                    ),
-                    hintText: context.tr(
-                      'Orn: https://example.com veya Steam',
-                      'e.g. https://example.com or Steam',
-                    ),
+                    labelText: _platformLabel(context),
+                    hintText: _platformHint(context),
                     prefixIcon: const Icon(Icons.public_rounded),
                   ),
                 ),
@@ -397,11 +471,17 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                   tilePadding: EdgeInsets.zero,
                   childrenPadding: EdgeInsets.zero,
                   title: Text(
-                    context.tr('Opsiyonel Alanlari Goster', 'Show Optional Fields'),
+                    context.tr(
+                      'Opsiyonel Alanlari Goster',
+                      'Show Optional Fields',
+                    ),
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   subtitle: Text(
-                    context.tr('Etiketler ve favori secenegi', 'Tags and favorite option'),
+                    context.tr(
+                      'Etiketler ve favori secenegi',
+                      'Tags and favorite option',
+                    ),
                     style: TextStyle(color: pr.textMuted),
                   ),
                   children: [
@@ -409,7 +489,10 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                     TextFormField(
                       controller: _tagsController,
                       decoration: InputDecoration(
-                        labelText: context.tr('Etiketler (Opsiyonel)', 'Tags (Optional)'),
+                        labelText: context.tr(
+                          'Etiketler (Opsiyonel)',
+                          'Tags (Optional)',
+                        ),
                         hintText: context.tr(
                           'Orn: kritik, is, yenilenmeli',
                           'e.g. critical, work, rotate',
@@ -421,7 +504,9 @@ class _RecordFormScreenState extends State<RecordFormScreen> {
                     SwitchListTile.adaptive(
                       contentPadding: EdgeInsets.zero,
                       value: _favorite,
-                      title: Text(context.tr('Favorilere Ekle', 'Add to Favorites')),
+                      title: Text(
+                        context.tr('Favorilere Ekle', 'Add to Favorites'),
+                      ),
                       subtitle: Text(
                         context.tr(
                           'Kaydi listede one cikarir',

@@ -3,36 +3,101 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import '../data/fake_records.dart';
 import '../models/vault_record.dart';
+import '../services/encrypted_vault_storage_service.dart';
+import '../services/vault_transfer_service.dart';
+import '../utils/app_logger.dart';
 import '../utils/password_utils.dart';
 
 class VaultStore extends ChangeNotifier {
-  VaultStore({List<VaultRecord>? seed})
-    : _records = List<VaultRecord>.from(seed ?? fakeRecords) {
+  VaultStore({
+    List<VaultRecord>? seed,
+    EncryptedVaultStorageService? storageService,
+  }) : _records = List<VaultRecord>.from(seed ?? const <VaultRecord>[]),
+       _storageService = storageService ?? EncryptedVaultStorageService() {
     unawaited(_loadFromStorage());
   }
 
-  static const String _storageKey = 'passroot_vault_records_v2';
-
   final List<VaultRecord> _records;
+  final EncryptedVaultStorageService _storageService;
+  bool _isLoading = true;
+  VaultStorageIssue? _storageIssue;
   final Map<String, _DerivedPasswordData> _derivedPasswordCache =
       <String, _DerivedPasswordData>{};
+  final Map<RecordCategory, UnmodifiableListView<VaultRecord>>
+  _categoryViewCache = <RecordCategory, UnmodifiableListView<VaultRecord>>{};
   List<VaultRecord> _sortedCache = const <VaultRecord>[];
   UnmodifiableListView<VaultRecord> _sortedView =
       UnmodifiableListView<VaultRecord>(const <VaultRecord>[]);
+  UnmodifiableListView<VaultRecord> _strongView =
+      UnmodifiableListView<VaultRecord>(const <VaultRecord>[]);
+  UnmodifiableListView<VaultRecord> _weakView =
+      UnmodifiableListView<VaultRecord>(const <VaultRecord>[]);
+  Map<String, List<VaultRecord>> _repeatedGroupsCache =
+      const <String, List<VaultRecord>>{};
+  int _repeatedRecordCountCache = 0;
+  int _repeatedGroupCountCache = 0;
   bool _sortedCacheDirty = true;
+  bool _categoryCacheDirty = true;
+  bool _securitySummaryDirty = true;
 
-  Future<void> _loadFromStorage() async {
+  bool get isLoading => _isLoading;
+  VaultStorageIssue? get storageIssue => _storageIssue;
+  bool get hasStorageIssue => _storageIssue != null;
+
+  Future<void> retryLoadFromStorage() {
+    return _loadFromStorage(forceReload: true);
+  }
+
+  Future<void> clearCorruptedStorage() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_storageKey);
-      if (raw == null || raw.trim().isEmpty) return;
+      await _storageService.clear();
+      _records.clear();
+      _markCachesDirty(clearDerivedCache: true);
+      _clearStorageIssue();
+      notifyListeners();
+    } on EncryptedVaultStorageException catch (error, stackTrace) {
+      _logStorageError('clear', error, stackTrace);
+      _setStorageIssue(_issueFromStorageException(error));
+      throw VaultStoreException(
+        'Bozuk kasa verisi temizlenemedi. LÃ¼tfen tekrar deneyin.',
+      );
+    } on Exception catch (error, stackTrace) {
+      _logStorageError('clear', error, stackTrace);
+      _setStorageIssue(
+        VaultStorageIssue(
+          title: 'Kasa temizlenemedi',
+          message:
+              'Kasa verisi temizlenemedi. Cihaz depolama iznini ve boÅŸ alanÄ± kontrol edin.',
+          code: 'vault_clear_failed',
+          type: VaultStorageIssueType.writeFailure,
+        ),
+      );
+      throw VaultStoreException(
+        'Kasa verisi temizlenemedi. LÃ¼tfen depolama alanÄ±nÄ± kontrol edin.',
+      );
+    }
+  }
+
+  Future<void> _loadFromStorage({bool forceReload = false}) async {
+    _isLoading = true;
+    if (forceReload) {
+      notifyListeners();
+    }
+    try {
+      final raw = await _storageService.loadJsonPayload();
+      if (raw == null || raw.trim().isEmpty) {
+        _records.clear();
+        _markCachesDirty(clearDerivedCache: true);
+        _clearStorageIssue(notify: false);
+        return;
+      }
 
       final decoded = jsonDecode(raw);
-      if (decoded is! List) return;
+      if (decoded is! List) {
+        throw const FormatException('Kasa verisi beklenen listede deÄŸil.');
+      }
 
       final loaded = <VaultRecord>[];
       for (final item in decoded) {
@@ -42,29 +107,147 @@ class VaultStore extends ChangeNotifier {
           loaded.add(VaultRecord.fromJson(item.cast<String, dynamic>()));
         }
       }
-      if (loaded.isEmpty) return;
       _records
         ..clear()
         ..addAll(loaded);
-      _sortedCacheDirty = true;
+      _markCachesDirty(clearDerivedCache: true);
+      _clearStorageIssue(notify: false);
+    } on EncryptedVaultStorageException catch (error, stackTrace) {
+      _logStorageError('load', error, stackTrace);
+      _setStorageIssue(_issueFromStorageException(error), notify: false);
+    } on FormatException catch (error, stackTrace) {
+      _logStorageError('decode', error, stackTrace);
+      _setStorageIssue(
+        VaultStorageIssue(
+          title: 'Kasa verisi bozuk',
+          message:
+              'Kasa verisi okunamadÄ±. Åifreli iÃ§erik bozulmuÅŸ olabilir. LÃ¼tfen yedekten geri yÃ¼klemeyi deneyin.',
+          code: 'vault_payload_corrupted',
+          type: VaultStorageIssueType.corruptedPayload,
+        ),
+        notify: false,
+      );
+    } on Exception catch (error, stackTrace) {
+      _logStorageError('load', error, stackTrace);
+      _setStorageIssue(
+        VaultStorageIssue(
+          title: 'Kasa verisi okunamadÄ±',
+          message:
+              'Kasa verisi ÅŸu anda okunamÄ±yor. Tekrar deneyin veya yedekten geri yÃ¼kleyin.',
+          code: 'vault_read_failed',
+          type: VaultStorageIssueType.readFailure,
+        ),
+        notify: false,
+      );
+    } finally {
+      _isLoading = false;
       notifyListeners();
-    } catch (_) {
-      // Keep in-memory seed when persisted data cannot be parsed.
     }
   }
 
-  Future<void> _persistToStorage() async {
+  Future<void> _commitRecords(
+    List<VaultRecord> nextRecords, {
+    required String operation,
+  }) async {
+    final payload = nextRecords.map((record) => record.toJson()).toList();
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final payload = _records.map((record) => record.toJson()).toList();
-      await prefs.setString(_storageKey, jsonEncode(payload));
-    } catch (_) {
-      // Ignore persistence errors and keep app usable.
+      await _storageService.saveJsonPayload(jsonEncode(payload));
+    } on EncryptedVaultStorageException catch (error, stackTrace) {
+      _logStorageError(operation, error, stackTrace);
+      _setStorageIssue(_issueFromStorageException(error));
+      throw VaultStoreException(
+        'Veri cihaza kaydedilemedi. LÃ¼tfen tekrar deneyin.',
+      );
+    } on Exception catch (error, stackTrace) {
+      _logStorageError(operation, error, stackTrace);
+      _setStorageIssue(
+        VaultStorageIssue(
+          title: 'Kasa kaydedilemedi',
+          message:
+              'DeÄŸiÅŸiklikler cihaza yazÄ±lamadÄ±. Depolama alanÄ±nÄ± kontrol edip tekrar deneyin.',
+          code: 'vault_write_failed',
+          type: VaultStorageIssueType.writeFailure,
+        ),
+      );
+      throw VaultStoreException(
+        'DeÄŸiÅŸiklikler cihaza kaydedilemedi. LÃ¼tfen tekrar deneyin.',
+      );
+    }
+
+    _records
+      ..clear()
+      ..addAll(nextRecords);
+    _markCachesDirty(clearDerivedCache: true);
+    _clearStorageIssue(notify: false);
+    notifyListeners();
+  }
+
+  void _markCachesDirty({bool clearDerivedCache = false}) {
+    _sortedCacheDirty = true;
+    _categoryCacheDirty = true;
+    _securitySummaryDirty = true;
+    if (clearDerivedCache) {
+      _derivedPasswordCache.clear();
     }
   }
 
-  void _persistAsync() {
-    unawaited(_persistToStorage());
+  void _logStorageError(String stage, Object error, StackTrace stackTrace) {
+    AppLogger.debug(
+      'VaultStore/$stage',
+      'Storage operation failed',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
+
+  void _setStorageIssue(VaultStorageIssue issue, {bool notify = true}) {
+    _storageIssue = issue;
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  void _clearStorageIssue({bool notify = false}) {
+    if (_storageIssue == null) {
+      return;
+    }
+    _storageIssue = null;
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  VaultStorageIssue _issueFromStorageException(
+    EncryptedVaultStorageException error,
+  ) {
+    switch (error.code) {
+      case EncryptedVaultStorageErrorCode.decryptionFailed:
+      case EncryptedVaultStorageErrorCode.invalidPayload:
+        return VaultStorageIssue(
+          title: 'Kasa verisi Ã§Ã¶zÃ¼mlenemedi',
+          message:
+              'Kasa verisi aÃ§Ä±lamadÄ±. Åifreleme verisi bozulmuÅŸ olabilir. Yedekten geri yÃ¼klemeyi deneyin.',
+          code: 'vault_decrypt_failed',
+          type: VaultStorageIssueType.corruptedPayload,
+        );
+      case EncryptedVaultStorageErrorCode.readFailed:
+      case EncryptedVaultStorageErrorCode.secureStorageUnavailable:
+        return VaultStorageIssue(
+          title: 'Kasa verisine eriÅŸilemiyor',
+          message:
+              'Depolama alanÄ±na eriÅŸilemedi. UygulamayÄ± yeniden baÅŸlatÄ±p tekrar deneyin.',
+          code: 'vault_read_failed',
+          type: VaultStorageIssueType.readFailure,
+        );
+      case EncryptedVaultStorageErrorCode.writeFailed:
+        return VaultStorageIssue(
+          title: 'Kasa kaydedilemedi',
+          message:
+              'DeÄŸiÅŸiklikler cihaza kaydedilemedi. Depolama alanÄ±nÄ± kontrol edip tekrar deneyin.',
+          code: 'vault_write_failed',
+          type: VaultStorageIssueType.writeFailure,
+        );
+    }
   }
 
   UnmodifiableListView<VaultRecord> get records =>
@@ -81,70 +264,86 @@ class VaultStore extends ChangeNotifier {
         });
       _sortedView = UnmodifiableListView<VaultRecord>(_sortedCache);
       _sortedCacheDirty = false;
+      _categoryCacheDirty = true;
     }
     return _sortedView;
   }
 
   List<VaultRecord> recordsForCategory(RecordCategory category) {
-    return sortedRecords
-        .where((record) => record.category == category)
-        .toList();
+    if (_categoryCacheDirty) {
+      _rebuildCategoryCache();
+    }
+    return _categoryViewCache[category] ??
+        UnmodifiableListView<VaultRecord>(const <VaultRecord>[]);
   }
 
-  void replaceAllRecords(List<VaultRecord> records) {
-    _records
-      ..clear()
-      ..addAll(records);
-    _sortedCacheDirty = true;
-    _derivedPasswordCache.clear();
-    notifyListeners();
-    _persistAsync();
+  Future<void> replaceAllRecords(List<VaultRecord> records) {
+    return _commitRecords(
+      List<VaultRecord>.from(records),
+      operation: 'replace_all_records',
+    );
   }
 
-  void clearAllRecords() {
-    _records.clear();
-    _sortedCacheDirty = true;
-    _derivedPasswordCache.clear();
-    notifyListeners();
-    _persistAsync();
+  Future<void> clearAllRecords() {
+    return _commitRecords(
+      const <VaultRecord>[],
+      operation: 'clear_all_records',
+    );
   }
 
-  void addRecord(VaultRecord record) {
-    _records.add(record);
-    _sortedCacheDirty = true;
-    _derivedPasswordCache.remove(record.id);
-    notifyListeners();
-    _persistAsync();
+  Future<void> addRecord(VaultRecord record) {
+    final next = List<VaultRecord>.from(_records)..add(record);
+    return _commitRecords(next, operation: 'add_record');
   }
 
-  void updateRecord(VaultRecord updated) {
+  Future<void> updateRecord(VaultRecord updated) {
     final index = _records.indexWhere((record) => record.id == updated.id);
-    if (index == -1) return;
-    _records[index] = updated;
-    _sortedCacheDirty = true;
-    _derivedPasswordCache.remove(updated.id);
-    notifyListeners();
-    _persistAsync();
+    if (index == -1) {
+      return Future<void>.value();
+    }
+    final next = List<VaultRecord>.from(_records)..[index] = updated;
+    return _commitRecords(next, operation: 'update_record');
   }
 
-  void deleteRecord(String id) {
-    _records.removeWhere((record) => record.id == id);
-    _sortedCacheDirty = true;
-    _derivedPasswordCache.remove(id);
-    notifyListeners();
-    _persistAsync();
+  Future<void> deleteRecord(String id) {
+    final next = List<VaultRecord>.from(_records)
+      ..removeWhere((record) => record.id == id);
+    return _commitRecords(next, operation: 'delete_record');
   }
 
-  void toggleFavorite(String id) {
+  Future<void> toggleFavorite(String id) {
     final index = _records.indexWhere((record) => record.id == id);
-    if (index == -1) return;
-    _records[index] = _records[index].copyWith(
+    if (index == -1) {
+      return Future<void>.value();
+    }
+    final next = List<VaultRecord>.from(_records);
+    next[index] = next[index].copyWith(
       isFavorite: !_records[index].isFavorite,
       updatedAt: DateTime.now(),
     );
-    _sortedCacheDirty = true;
-    notifyListeners();
-    _persistAsync();
+    return _commitRecords(next, operation: 'toggle_favorite');
+  }
+
+  void _rebuildCategoryCache() {
+    // Performance: cache filtered category lists to avoid repeated where/toList in UI rebuilds.
+    final buckets = <RecordCategory, List<VaultRecord>>{
+      for (final category in RecordCategory.values) category: <VaultRecord>[],
+    };
+    for (final record in sortedRecords) {
+      buckets[record.category]!.add(record);
+    }
+    _categoryViewCache
+      ..clear()
+      ..addEntries(
+        buckets.entries.map(
+          (entry) =>
+              MapEntry<RecordCategory, UnmodifiableListView<VaultRecord>>(
+                entry.key,
+                UnmodifiableListView<VaultRecord>(entry.value),
+              ),
+        ),
+      );
+    _categoryCacheDirty = false;
   }
 
   PasswordAnalysis analysisForRecord(VaultRecord record) {
@@ -181,43 +380,74 @@ class VaultStore extends ChangeNotifier {
   int get favoriteCount => _records.where((record) => record.isFavorite).length;
 
   List<VaultRecord> get strongRecords {
-    return sortedRecords
-        .where(
-          (record) =>
-              analyzePassword(record.password).strength ==
-              PasswordStrength.strong,
-        )
-        .toList();
+    _ensureSecuritySummaryCache();
+    return _strongView;
   }
 
   List<VaultRecord> get weakRecords {
-    return sortedRecords
-        .where(
-          (record) =>
-              analyzePassword(record.password).strength ==
-              PasswordStrength.weak,
-        )
-        .toList();
+    _ensureSecuritySummaryCache();
+    return _weakView;
   }
 
   Map<String, List<VaultRecord>> get repeatedPasswordGroups {
-    final map = <String, List<VaultRecord>>{};
-    for (final record in sortedRecords) {
-      if (record.password.trim().isEmpty) continue;
-      map.putIfAbsent(record.password, () => <VaultRecord>[]).add(record);
-    }
-    map.removeWhere((key, value) => value.length < 2);
-    return map;
+    _ensureSecuritySummaryCache();
+    return _repeatedGroupsCache;
   }
 
   int get repeatedRecordCount {
-    return repeatedPasswordGroups.values.fold<int>(
+    _ensureSecuritySummaryCache();
+    return _repeatedRecordCountCache;
+  }
+
+  int get repeatedGroupCount {
+    _ensureSecuritySummaryCache();
+    return _repeatedGroupCountCache;
+  }
+
+  void _ensureSecuritySummaryCache() {
+    if (!_securitySummaryDirty) {
+      return;
+    }
+
+    final strong = <VaultRecord>[];
+    final weak = <VaultRecord>[];
+    final repeatedMap = <String, List<VaultRecord>>{};
+
+    for (final record in sortedRecords) {
+      final analysis = _derivePasswordData(record).analysis;
+      if (analysis.strength == PasswordStrength.strong) {
+        strong.add(record);
+      } else if (analysis.strength == PasswordStrength.weak) {
+        weak.add(record);
+      }
+
+      final normalizedPassword = record.password.trim();
+      if (normalizedPassword.isEmpty) {
+        continue;
+      }
+      repeatedMap
+          .putIfAbsent(record.password, () => <VaultRecord>[])
+          .add(record);
+    }
+
+    repeatedMap.removeWhere((_, value) => value.length < 2);
+    _strongView = UnmodifiableListView<VaultRecord>(strong);
+    _weakView = UnmodifiableListView<VaultRecord>(weak);
+    _repeatedGroupsCache = Map<String, List<VaultRecord>>.unmodifiable(
+      repeatedMap.map(
+        (key, value) => MapEntry<String, List<VaultRecord>>(
+          key,
+          List<VaultRecord>.unmodifiable(value),
+        ),
+      ),
+    );
+    _repeatedRecordCountCache = _repeatedGroupsCache.values.fold<int>(
       0,
       (sum, list) => sum + list.length,
     );
+    _repeatedGroupCountCache = _repeatedGroupsCache.length;
+    _securitySummaryDirty = false;
   }
-
-  int get repeatedGroupCount => repeatedPasswordGroups.length;
 
   List<Map<String, dynamic>> toJsonList() {
     return _records.map((record) => record.toJson()).toList();
@@ -234,219 +464,30 @@ class VaultStore extends ChangeNotifier {
         : jsonEncode(payload);
   }
 
-  int importFromJsonString(String raw) {
-    final decoded = jsonDecode(raw);
-    if (decoded is! Map<String, dynamic>) {
-      throw const FormatException('Gecersiz dosya yapisi.');
-    }
+  Future<String> encodeJsonInBackground({bool pretty = false}) async {
+    final recordsPayload = toJsonList();
+    return VaultTransferService.buildExportJson(
+      records: recordsPayload,
+      pretty: pretty,
+    );
+  }
 
-    final data = decoded['records'];
-    if (data is! List) {
-      throw const FormatException('Kayit listesi bulunamadi.');
-    }
-
-    final parsed = <VaultRecord>[];
-    for (final item in data) {
-      if (item is Map<String, dynamic>) {
-        parsed.add(VaultRecord.fromJson(item));
-      } else if (item is Map) {
-        parsed.add(VaultRecord.fromJson(item.cast<String, dynamic>()));
-      }
-    }
-    replaceAllRecords(parsed);
+  Future<int> importFromJsonString(String raw) async {
+    final payload = await VaultTransferService.parseVaultJsonRecords(raw);
+    final parsed = payload
+        .map((item) => VaultRecord.fromJson(item))
+        .toList(growable: false);
+    await replaceAllRecords(parsed);
     return parsed.length;
   }
 
-  int importFromCsvString(String raw) {
-    final rows = _CsvTableParser.parse(raw);
-    if (rows.isEmpty) {
-      throw const FormatException('CSV dosyasi bos.');
-    }
-
-    final headers = rows.first.map(_normalizeCsvHeader).toList(growable: false);
-    final urlIndex = _findHeaderIndex(headers, const <String>[
-      'url',
-      'website',
-      'site',
-      'origin',
-      'loginuri',
-    ]);
-    final usernameIndex = _findHeaderIndex(headers, const <String>[
-      'username',
-      'user',
-      'login',
-      'email',
-    ]);
-    final passwordIndex = _findHeaderIndex(headers, const <String>[
-      'password',
-      'pass',
-      'sifre',
-    ]);
-    final nameIndex = _findHeaderIndex(headers, const <String>[
-      'name',
-      'title',
-      'sitename',
-      'accountname',
-    ]);
-    final noteIndex = _findHeaderIndex(headers, const <String>[
-      'note',
-      'notes',
-      'comment',
-      'aciklama',
-    ]);
-
-    if (passwordIndex == -1) {
-      throw const FormatException(
-        'CSV basligi desteklenmiyor. Beklenen kolon: password.',
-      );
-    }
-
-    final now = DateTime.now();
-    final parsed = <VaultRecord>[];
-    for (var rowIndex = 1; rowIndex < rows.length; rowIndex++) {
-      final row = rows[rowIndex];
-      final rawUrl = _csvValue(row, urlIndex);
-      final username = _csvValue(row, usernameIndex);
-      final password = _csvValue(row, passwordIndex);
-      final rawName = _csvValue(row, nameIndex);
-      final rawNote = _csvValue(row, noteIndex);
-
-      if (rawUrl.isEmpty && username.isEmpty && password.isEmpty && rawName.isEmpty) {
-        continue;
-      }
-      if (password.isEmpty) {
-        continue;
-      }
-
-      final normalizedUrl = _normalizeImportedUrl(rawUrl);
-      final platform = _platformFromUrl(normalizedUrl);
-      final title = _resolveImportedTitle(
-        name: rawName,
-        url: normalizedUrl,
-        username: username,
-        index: parsed.length + 1,
-      );
-      final note = _mergeImportedNote(rawNote);
-      final category = normalizedUrl.isNotEmpty
-          ? RecordCategory.website
-          : RecordCategory.other;
-
-      parsed.add(
-        VaultRecord(
-          id: '${now.microsecondsSinceEpoch}_${rowIndex}_${parsed.length}',
-          title: title,
-          category: category,
-          platform: platform.isEmpty ? title : platform,
-          accountName: username,
-          password: password,
-          note: note,
-          websiteOrDescription: normalizedUrl,
-          isFavorite: false,
-          securityNote: '',
-          securityTag: '',
-          tags: const <String>[],
-          createdAt: now,
-          updatedAt: now,
-        ),
-      );
-    }
-
-    if (parsed.isEmpty) {
-      throw const FormatException(
-        'CSV dosyasinda aktarilacak parola kaydi bulunamadi.',
-      );
-    }
-
-    replaceAllRecords(parsed);
+  Future<int> importFromCsvString(String raw) async {
+    final payload = await VaultTransferService.parseVaultCsvRecords(raw);
+    final parsed = payload
+        .map((item) => VaultRecord.fromJson(item))
+        .toList(growable: false);
+    await replaceAllRecords(parsed);
     return parsed.length;
-  }
-
-  int _findHeaderIndex(List<String> headers, List<String> aliases) {
-    final normalizedAliases = aliases
-        .map(_normalizeCsvHeader)
-        .toSet();
-    for (var i = 0; i < headers.length; i++) {
-      if (normalizedAliases.contains(headers[i])) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
-  String _normalizeCsvHeader(String value) {
-    var normalized = value.trim().toLowerCase();
-    if (normalized.startsWith('\uFEFF')) {
-      normalized = normalized.substring(1);
-    }
-    normalized = normalized.replaceAll('"', '');
-    normalized = normalized.replaceAll(RegExp(r'[\s_-]+'), '');
-    return normalized;
-  }
-
-  String _csvValue(List<String> row, int index) {
-    if (index < 0 || index >= row.length) {
-      return '';
-    }
-    return row[index].trim();
-  }
-
-  String _normalizeImportedUrl(String value) {
-    final raw = value.trim();
-    if (raw.isEmpty) {
-      return '';
-    }
-    final candidate = raw.contains('://') ? raw : 'https://$raw';
-    final uri = Uri.tryParse(candidate);
-    if (uri == null) {
-      return raw;
-    }
-    if ((uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty) {
-      return uri.toString();
-    }
-    return raw;
-  }
-
-  String _platformFromUrl(String url) {
-    if (url.trim().isEmpty) {
-      return '';
-    }
-    final uri = Uri.tryParse(url);
-    if (uri == null || uri.host.trim().isEmpty) {
-      return '';
-    }
-    final host = uri.host.toLowerCase();
-    if (host.startsWith('www.')) {
-      return host.substring(4);
-    }
-    return host;
-  }
-
-  String _resolveImportedTitle({
-    required String name,
-    required String url,
-    required String username,
-    required int index,
-  }) {
-    if (name.trim().isNotEmpty) {
-      return name.trim();
-    }
-    final host = _platformFromUrl(url);
-    if (host.isNotEmpty) {
-      return host;
-    }
-    if (username.trim().isNotEmpty) {
-      return username.trim();
-    }
-    return 'Imported Record $index';
-  }
-
-  String _mergeImportedNote(String rawNote) {
-    final sourceTag = '[Imported from Google Password Manager CSV]';
-    final trimmed = rawNote.trim();
-    if (trimmed.isEmpty) {
-      return sourceTag;
-    }
-    return '$trimmed\n\n$sourceTag';
   }
 
   Map<RecordCategory, int> get categoryCount {
@@ -488,61 +529,28 @@ class _DerivedPasswordData {
   final String maskedPassword;
 }
 
-class _CsvTableParser {
-  static List<List<String>> parse(String input) {
-    final rows = <List<String>>[];
-    final row = <String>[];
-    final cell = StringBuffer();
+enum VaultStorageIssueType { corruptedPayload, readFailure, writeFailure }
 
-    var inQuotes = false;
-    var i = 0;
-    while (i < input.length) {
-      final char = input[i];
-      if (char == '"') {
-        final nextIsQuote = i + 1 < input.length && input[i + 1] == '"';
-        if (inQuotes && nextIsQuote) {
-          cell.write('"');
-          i += 2;
-          continue;
-        }
-        inQuotes = !inQuotes;
-        i++;
-        continue;
-      }
+@immutable
+class VaultStorageIssue {
+  const VaultStorageIssue({
+    required this.title,
+    required this.message,
+    required this.code,
+    required this.type,
+  });
 
-      if (!inQuotes && char == ',') {
-        row.add(cell.toString());
-        cell.clear();
-        i++;
-        continue;
-      }
+  final String title;
+  final String message;
+  final String code;
+  final VaultStorageIssueType type;
+}
 
-      if (!inQuotes && (char == '\n' || char == '\r')) {
-        row.add(cell.toString());
-        cell.clear();
-        rows.add(List<String>.from(row));
-        row.clear();
+class VaultStoreException implements Exception {
+  const VaultStoreException(this.message);
 
-        if (char == '\r' && i + 1 < input.length && input[i + 1] == '\n') {
-          i += 2;
-        } else {
-          i++;
-        }
-        continue;
-      }
+  final String message;
 
-      cell.write(char);
-      i++;
-    }
-
-    final hasTailData = cell.isNotEmpty || row.isNotEmpty;
-    if (hasTailData) {
-      row.add(cell.toString());
-      rows.add(List<String>.from(row));
-    }
-
-    return rows
-        .where((r) => r.any((value) => value.trim().isNotEmpty))
-        .toList(growable: false);
-  }
+  @override
+  String toString() => message;
 }

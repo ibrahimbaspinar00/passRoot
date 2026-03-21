@@ -157,8 +157,16 @@ class PassRootColors extends ThemeExtension<PassRootColors> {
   PassRootColors lerp(ThemeExtension<PassRootColors>? other, double t) {
     if (other is! PassRootColors) return this;
     return PassRootColors(
-      canvasGradientTop: Color.lerp(canvasGradientTop, other.canvasGradientTop, t)!,
-      canvasGradientBottom: Color.lerp(canvasGradientBottom, other.canvasGradientBottom, t)!,
+      canvasGradientTop: Color.lerp(
+        canvasGradientTop,
+        other.canvasGradientTop,
+        t,
+      )!,
+      canvasGradientBottom: Color.lerp(
+        canvasGradientBottom,
+        other.canvasGradientBottom,
+        t,
+      )!,
       panelSurface: Color.lerp(panelSurface, other.panelSurface, t)!,
       panelBorder: Color.lerp(panelBorder, other.panelBorder, t)!,
       panelShadow: Color.lerp(panelShadow, other.panelShadow, t)!,
@@ -169,7 +177,11 @@ class PassRootColors extends ThemeExtension<PassRootColors> {
       dangerSoft: Color.lerp(dangerSoft, other.dangerSoft, t)!,
       textMuted: Color.lerp(textMuted, other.textMuted, t)!,
       iconMuted: Color.lerp(iconMuted, other.iconMuted, t)!,
-      heroGradientStart: Color.lerp(heroGradientStart, other.heroGradientStart, t)!,
+      heroGradientStart: Color.lerp(
+        heroGradientStart,
+        other.heroGradientStart,
+        t,
+      )!,
       heroGradientEnd: Color.lerp(heroGradientEnd, other.heroGradientEnd, t)!,
       lockOverlay: Color.lerp(lockOverlay, other.lockOverlay, t)!,
     );
@@ -192,21 +204,28 @@ class AppTheme {
 
   static ThemeData _build(Brightness brightness, Color seedColor) {
     final isDark = brightness == Brightness.dark;
-    final colorScheme = ColorScheme.fromSeed(
-      seedColor: seedColor,
-      brightness: brightness,
-    ).copyWith(
-      primary: seedColor,
-      secondary: Color.lerp(seedColor, const Color(0xFF67B5D1), 0.35),
-      surface: isDark ? const Color(0xFF182433) : Colors.white,
-    );
+    final colorScheme =
+        ColorScheme.fromSeed(
+          seedColor: seedColor,
+          brightness: brightness,
+        ).copyWith(
+          primary: seedColor,
+          secondary: Color.lerp(seedColor, const Color(0xFF67B5D1), 0.35),
+          surface: isDark ? const Color(0xFF182433) : Colors.white,
+        );
     final pr = isDark
         ? PassRootColors.dark(colorScheme)
         : PassRootColors.light(colorScheme);
+    final textTheme = _buildTextTheme(
+      brightness: brightness,
+      colorScheme: colorScheme,
+    );
 
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
+      typography: Typography.material2021(),
+      textTheme: textTheme,
       scaffoldBackgroundColor: isDark
           ? const Color(0xFF101925)
           : const Color(0xFFF5F9FD),
@@ -216,10 +235,9 @@ class AppTheme {
         surfaceTintColor: Colors.transparent,
         backgroundColor: Colors.transparent,
         centerTitle: false,
-        titleTextStyle: TextStyle(
+        titleTextStyle: textTheme.titleLarge?.copyWith(
           color: colorScheme.onSurface,
-          fontSize: 24,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
         ),
       ),
       cardTheme: CardThemeData(
@@ -231,7 +249,10 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: pr.softFill,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 14,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide.none,
@@ -244,26 +265,46 @@ class AppTheme {
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide(color: colorScheme.primary, width: 1.3),
         ),
-        labelStyle: TextStyle(color: pr.textMuted, fontWeight: FontWeight.w600),
+        labelStyle: textTheme.bodyMedium?.copyWith(
+          color: pr.textMuted,
+          fontWeight: FontWeight.w600,
+        ),
+        hintStyle: textTheme.bodyMedium?.copyWith(
+          color: pr.textMuted.withValues(alpha: 0.92),
+          fontWeight: FontWeight.w500,
+        ),
       ),
       navigationBarTheme: NavigationBarThemeData(
         height: 72,
         backgroundColor: pr.panelSurface,
-        indicatorColor: colorScheme.primary.withValues(alpha: isDark ? 0.3 : 0.16),
+        indicatorColor: colorScheme.primary.withValues(
+          alpha: isDark ? 0.3 : 0.16,
+        ),
         labelTextStyle: WidgetStateProperty.all(
-          const TextStyle(fontWeight: FontWeight.w700),
+          textTheme.labelMedium!.copyWith(fontWeight: FontWeight.w700),
         ),
       ),
       chipTheme: ChipThemeData(
         backgroundColor: pr.softFillAlt,
-        selectedColor: colorScheme.primary.withValues(alpha: isDark ? 0.36 : 0.22),
+        selectedColor: colorScheme.primary.withValues(
+          alpha: isDark ? 0.36 : 0.22,
+        ),
         side: BorderSide(color: pr.panelBorder),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-        labelStyle: TextStyle(fontWeight: FontWeight.w600, color: colorScheme.onSurface),
+        labelStyle: textTheme.labelLarge?.copyWith(
+          fontWeight: FontWeight.w600,
+          color: colorScheme.onSurface,
+        ),
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: pr.panelSurface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        titleTextStyle: textTheme.titleMedium?.copyWith(
+          color: colorScheme.onSurface,
+        ),
+        contentTextStyle: textTheme.bodyMedium?.copyWith(
+          color: colorScheme.onSurfaceVariant,
+        ),
       ),
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: pr.panelSurface,
@@ -283,8 +324,13 @@ class AppTheme {
         style: FilledButton.styleFrom(
           backgroundColor: colorScheme.primary,
           foregroundColor: colorScheme.onPrimary,
-          textStyle: const TextStyle(fontWeight: FontWeight.w700),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            height: 1.2,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         ),
       ),
@@ -292,7 +338,9 @@ class AppTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: colorScheme.onSurface,
           side: BorderSide(color: pr.panelBorder),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
         ),
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
@@ -304,10 +352,104 @@ class AppTheme {
         textColor: colorScheme.onSurface,
       ),
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: isDark ? const Color(0xFF203245) : const Color(0xFF13314F),
-        contentTextStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+        backgroundColor: isDark
+            ? const Color(0xFF203245)
+            : const Color(0xFF13314F),
+        contentTextStyle: textTheme.bodyMedium?.copyWith(
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+        ),
         behavior: SnackBarBehavior.floating,
       ),
+    );
+  }
+
+  static TextTheme _buildTextTheme({
+    required Brightness brightness,
+    required ColorScheme colorScheme,
+  }) {
+    final base = brightness == Brightness.dark
+        ? Typography.material2021().white
+        : Typography.material2021().black;
+
+    final themed = base.copyWith(
+      displayLarge: base.displayLarge?.copyWith(
+        fontSize: 52,
+        fontWeight: FontWeight.w700,
+        height: 1.08,
+        letterSpacing: -0.4,
+      ),
+      displayMedium: base.displayMedium?.copyWith(
+        fontSize: 44,
+        fontWeight: FontWeight.w700,
+        height: 1.1,
+        letterSpacing: -0.3,
+      ),
+      headlineLarge: base.headlineLarge?.copyWith(
+        fontSize: 32,
+        fontWeight: FontWeight.w700,
+        height: 1.15,
+      ),
+      headlineMedium: base.headlineMedium?.copyWith(
+        fontSize: 28,
+        fontWeight: FontWeight.w700,
+        height: 1.16,
+      ),
+      headlineSmall: base.headlineSmall?.copyWith(
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        height: 1.18,
+      ),
+      titleLarge: base.titleLarge?.copyWith(
+        fontSize: 21,
+        fontWeight: FontWeight.w700,
+        height: 1.22,
+      ),
+      titleMedium: base.titleMedium?.copyWith(
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        height: 1.24,
+      ),
+      titleSmall: base.titleSmall?.copyWith(
+        fontSize: 15,
+        fontWeight: FontWeight.w600,
+        height: 1.24,
+      ),
+      bodyLarge: base.bodyLarge?.copyWith(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        height: 1.45,
+      ),
+      bodyMedium: base.bodyMedium?.copyWith(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        height: 1.42,
+      ),
+      bodySmall: base.bodySmall?.copyWith(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        height: 1.35,
+      ),
+      labelLarge: base.labelLarge?.copyWith(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        height: 1.2,
+      ),
+      labelMedium: base.labelMedium?.copyWith(
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+        height: 1.2,
+      ),
+      labelSmall: base.labelSmall?.copyWith(
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
+        height: 1.2,
+      ),
+    );
+
+    return themed.apply(
+      bodyColor: colorScheme.onSurface,
+      displayColor: colorScheme.onSurface,
     );
   }
 }

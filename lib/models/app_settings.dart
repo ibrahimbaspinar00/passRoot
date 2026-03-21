@@ -4,7 +4,7 @@ enum AppLanguage { turkish, english }
 
 extension AppLanguageX on AppLanguage {
   String get label => switch (this) {
-    AppLanguage.turkish => 'Turkce',
+    AppLanguage.turkish => 'Türkçe',
     AppLanguage.english => 'English',
   };
 
@@ -56,37 +56,6 @@ extension AutoLockOptionX on AutoLockOption {
   };
 }
 
-enum FirebaseSessionTimeoutOption { minutes15, hour1, hours8, day1 }
-
-extension FirebaseSessionTimeoutOptionX on FirebaseSessionTimeoutOption {
-  String get label => switch (this) {
-    FirebaseSessionTimeoutOption.minutes15 => '15 dk',
-    FirebaseSessionTimeoutOption.hour1 => '1 saat',
-    FirebaseSessionTimeoutOption.hours8 => '8 saat',
-    FirebaseSessionTimeoutOption.day1 => '24 saat',
-  };
-
-  String localizedLabel(BuildContext context) {
-    final isEnglish =
-        Localizations.maybeLocaleOf(context)?.languageCode.toLowerCase() ==
-        'en';
-    if (!isEnglish) return label;
-    return switch (this) {
-      FirebaseSessionTimeoutOption.minutes15 => '15 min',
-      FirebaseSessionTimeoutOption.hour1 => '1 hour',
-      FirebaseSessionTimeoutOption.hours8 => '8 hours',
-      FirebaseSessionTimeoutOption.day1 => '24 hours',
-    };
-  }
-
-  Duration get duration => switch (this) {
-    FirebaseSessionTimeoutOption.minutes15 => const Duration(minutes: 15),
-    FirebaseSessionTimeoutOption.hour1 => const Duration(hours: 1),
-    FirebaseSessionTimeoutOption.hours8 => const Duration(hours: 8),
-    FirebaseSessionTimeoutOption.day1 => const Duration(days: 1),
-  };
-}
-
 enum AppThemeAccent { ocean, cobalt, emerald, coral }
 
 extension AppThemeAccentX on AppThemeAccent {
@@ -105,7 +74,7 @@ extension AppThemeAccentX on AppThemeAccent {
     return switch (this) {
       AppThemeAccent.ocean => 'Okyanus',
       AppThemeAccent.cobalt => 'Kobalt',
-      AppThemeAccent.emerald => 'Zumrut',
+      AppThemeAccent.emerald => 'Zümrüt',
       AppThemeAccent.coral => 'Mercan',
     };
   }
@@ -243,12 +212,12 @@ class AppSettings {
     this.darkMode = false,
     this.themeAccent = AppThemeAccent.ocean,
     this.cardStyle = RecordCardStyle.comfy,
-    this.appLockEnabled = false,
+    this.appLockEnabled = true,
+    this.lockOnAppLaunch = true,
+    this.lockOnAppResume = false,
+    this.pinEnabled = false,
     this.pinCode,
-    this.biometricEnabled = false,
     this.autoLockOption = AutoLockOption.minute1,
-    this.firebaseSessionTimeoutEnabled = false,
-    this.firebaseSessionTimeoutOption = FirebaseSessionTimeoutOption.hour1,
     this.language = AppLanguage.turkish,
     this.passwordGenerator = const PasswordGeneratorSettings(),
     this.notifications = const SecurityNotificationSettings(),
@@ -259,17 +228,18 @@ class AppSettings {
   final AppThemeAccent themeAccent;
   final RecordCardStyle cardStyle;
   final bool appLockEnabled;
+  final bool lockOnAppLaunch;
+  final bool lockOnAppResume;
+  final bool pinEnabled;
+  // Legacy value kept only for migration from plaintext PIN storage.
   final String? pinCode;
-  final bool biometricEnabled;
   final AutoLockOption autoLockOption;
-  final bool firebaseSessionTimeoutEnabled;
-  final FirebaseSessionTimeoutOption firebaseSessionTimeoutOption;
   final AppLanguage language;
   final PasswordGeneratorSettings passwordGenerator;
   final SecurityNotificationSettings notifications;
   final String? lastBackupIso;
 
-  bool get hasPinCode => (pinCode ?? '').trim().isNotEmpty;
+  bool get hasPinCode => pinEnabled || (pinCode ?? '').trim().isNotEmpty;
 
   DateTime? get lastBackupAt {
     final value = lastBackupIso;
@@ -282,11 +252,11 @@ class AppSettings {
     AppThemeAccent? themeAccent,
     RecordCardStyle? cardStyle,
     bool? appLockEnabled,
+    bool? lockOnAppLaunch,
+    bool? lockOnAppResume,
+    bool? pinEnabled,
     Object? pinCode = _unset,
-    bool? biometricEnabled,
     AutoLockOption? autoLockOption,
-    bool? firebaseSessionTimeoutEnabled,
-    FirebaseSessionTimeoutOption? firebaseSessionTimeoutOption,
     AppLanguage? language,
     PasswordGeneratorSettings? passwordGenerator,
     SecurityNotificationSettings? notifications,
@@ -297,13 +267,11 @@ class AppSettings {
       themeAccent: themeAccent ?? this.themeAccent,
       cardStyle: cardStyle ?? this.cardStyle,
       appLockEnabled: appLockEnabled ?? this.appLockEnabled,
+      lockOnAppLaunch: lockOnAppLaunch ?? this.lockOnAppLaunch,
+      lockOnAppResume: lockOnAppResume ?? this.lockOnAppResume,
+      pinEnabled: pinEnabled ?? this.pinEnabled,
       pinCode: identical(pinCode, _unset) ? this.pinCode : pinCode as String?,
-      biometricEnabled: biometricEnabled ?? this.biometricEnabled,
       autoLockOption: autoLockOption ?? this.autoLockOption,
-      firebaseSessionTimeoutEnabled:
-          firebaseSessionTimeoutEnabled ?? this.firebaseSessionTimeoutEnabled,
-      firebaseSessionTimeoutOption:
-          firebaseSessionTimeoutOption ?? this.firebaseSessionTimeoutOption,
       language: language ?? this.language,
       passwordGenerator: passwordGenerator ?? this.passwordGenerator,
       notifications: notifications ?? this.notifications,
@@ -317,11 +285,11 @@ class AppSettings {
       'themeAccent': themeAccent.name,
       'cardStyle': cardStyle.name,
       'appLockEnabled': appLockEnabled,
+      'lockOnAppLaunch': lockOnAppLaunch,
+      'lockOnAppResume': lockOnAppResume,
+      'pinEnabled': pinEnabled,
       'pinCode': pinCode,
-      'biometricEnabled': biometricEnabled,
       'autoLockOption': autoLockOption.name,
-      'firebaseSessionTimeoutEnabled': firebaseSessionTimeoutEnabled,
-      'firebaseSessionTimeoutOption': firebaseSessionTimeoutOption.name,
       'language': language.name,
       'passwordGenerator': passwordGenerator.toJson(),
       'notifications': notifications.toJson(),
@@ -342,16 +310,17 @@ class AppSettings {
       darkMode: json['darkMode'] == true,
       themeAccent: _themeAccentFromName((json['themeAccent'] as String?) ?? ''),
       cardStyle: _cardStyleFromName((json['cardStyle'] as String?) ?? ''),
-      appLockEnabled: json['appLockEnabled'] == true,
+      appLockEnabled: json.containsKey('appLockEnabled')
+          ? json['appLockEnabled'] == true
+          : true,
+      lockOnAppLaunch: json['lockOnAppLaunch'] != false,
+      lockOnAppResume: json['lockOnAppResume'] == true,
+      pinEnabled:
+          json['pinEnabled'] == true ||
+          ((json['pinCode'] as String?)?.trim().isNotEmpty ?? false),
       pinCode: (json['pinCode'] as String?)?.trim(),
-      biometricEnabled: json['biometricEnabled'] == true,
       autoLockOption: _autoLockFromName(
         (json['autoLockOption'] as String?) ?? '',
-      ),
-      firebaseSessionTimeoutEnabled:
-          json['firebaseSessionTimeoutEnabled'] == true,
-      firebaseSessionTimeoutOption: _firebaseSessionTimeoutFromName(
-        (json['firebaseSessionTimeoutOption'] as String?) ?? '',
       ),
       language: _languageFromName((json['language'] as String?) ?? ''),
       passwordGenerator: PasswordGeneratorSettings.fromJson(
@@ -368,13 +337,6 @@ AutoLockOption _autoLockFromName(String raw) {
     if (option.name == raw) return option;
   }
   return AutoLockOption.minute1;
-}
-
-FirebaseSessionTimeoutOption _firebaseSessionTimeoutFromName(String raw) {
-  for (final option in FirebaseSessionTimeoutOption.values) {
-    if (option.name == raw) return option;
-  }
-  return FirebaseSessionTimeoutOption.hour1;
 }
 
 AppLanguage _languageFromName(String raw) {

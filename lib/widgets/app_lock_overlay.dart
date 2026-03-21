@@ -7,13 +7,17 @@ class AppLockOverlay extends StatelessWidget {
   const AppLockOverlay({
     super.key,
     required this.onUnlock,
-    required this.biometricEnabled,
-    required this.onUseBiometric,
+    this.busy = false,
+    this.errorText,
+    this.title,
+    this.subtitle,
   });
 
   final Future<void> Function() onUnlock;
-  final bool biometricEnabled;
-  final Future<bool> Function() onUseBiometric;
+  final bool busy;
+  final String? errorText;
+  final String? title;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -56,48 +60,60 @@ class AppLockOverlay extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  context.tr('Uygulama Kilitli', 'App Locked'),
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                  title ?? context.tr('Uygulama Kilitli', 'App Locked'),
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  context.tr(
-                    'Devam etmek icin kasayi tekrar acin.',
-                    'Unlock to continue.',
-                  ),
+                  subtitle ??
+                      context.tr(
+                        'Devam etmek icin kimliginizi dogrulayin.',
+                        'Verify your identity to continue.',
+                      ),
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: pr.textMuted),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: pr.textMuted,
+                  ),
                 ),
-                const SizedBox(height: 18),
-                FilledButton.icon(
-                  onPressed: () async {
-                    await onUnlock();
-                  },
-                  icon: const Icon(Icons.lock_open_rounded),
-                  label: Text(context.tr('Kilidi Ac', 'Unlock')),
-                ),
-                if (biometricEnabled) ...[
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final ok = await onUseBiometric();
-                      if (!ok && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              context.tr(
-                                'Biyometrik dogrulama basarisiz.',
-                                'Biometric authentication failed.',
-                              ),
-                            ),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.fingerprint_rounded),
-                    label: Text(context.tr('Biyometrik Dene', 'Try Biometric')),
+                if ((errorText ?? '').trim().isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.errorContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      errorText!,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onErrorContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ],
+                const SizedBox(height: 18),
+                FilledButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          await onUnlock();
+                        },
+                  icon: const Icon(Icons.lock_open_rounded),
+                  label: busy
+                      ? SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: theme.colorScheme.onPrimary,
+                          ),
+                        )
+                      : Text(context.tr('Kilidi Ac', 'Unlock')),
+                ),
               ],
             ),
           ),

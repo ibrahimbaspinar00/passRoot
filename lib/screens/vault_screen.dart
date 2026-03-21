@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../app/app_theme.dart';
@@ -6,6 +9,7 @@ import '../models/app_settings.dart';
 import '../models/vault_record.dart';
 import '../state/app_settings_store.dart';
 import '../state/vault_store.dart';
+import '../utils/password_utils.dart';
 import '../widgets/vault_record_card.dart';
 
 class VaultScreen extends StatefulWidget {
@@ -28,9 +32,23 @@ class VaultScreen extends StatefulWidget {
 
 class _VaultScreenState extends State<VaultScreen>
     with AutomaticKeepAliveClientMixin<VaultScreen> {
-  RecordCategory? _selectedCategory;
-  late RecordCardStyle _cardStyle;
-  List<VaultRecord> _records = const <VaultRecord>[];
+  static const int _pageSize = 48;
+  static const double _loadMoreThreshold = 460;
+  static const Duration _searchDebounce = Duration(milliseconds: 220);
+
+  final ScrollController _scrollController = ScrollController();
+  final TextEditingController _searchController = TextEditingController();
+  // Performance: keep derived view data per record to avoid repeating expensive work in builders.
+  final Map<String, _RecordRenderData> _renderDataCache =
+      <String, _RecordRenderData>{};
+  final Map<String, _SearchIndexData> _searchIndexCache =
+      <String, _SearchIndexData>{};
+
+  Timer? _searchDebounceTimer;
+
+  late final ValueNotifier<RecordCategory?> _selectedCategoryNotifier;
+  late final ValueNotifier<String> _searchQueryNotifier;
+  late final ValueNotifier<_VaultListState> _listStateNotifier;
 
   @override
   bool get wantKeepAlive => true;
@@ -38,10 +56,18 @@ class _VaultScreenState extends State<VaultScreen>
   @override
   void initState() {
     super.initState();
-    _cardStyle = widget.settingsStore.settings.cardStyle;
-    _records = _computeVisibleRecords();
+    _selectedCategoryNotifier = ValueNotifier<RecordCategory?>(null);
+    _searchQueryNotifier = ValueNotifier<String>('');
+    _listStateNotifier = ValueNotifier<_VaultListState>(
+      _VaultListState.empty(
+        compact:
+            widget.settingsStore.settings.cardStyle == RecordCardStyle.compact,
+      ),
+    );
     widget.store.addListener(_syncFromStores);
     widget.settingsStore.addListener(_syncFromStores);
+    _scrollController.addListener(_onScroll);
+    _syncFromStores(resetVisibleWindow: true);
   }
 
   @override
@@ -55,187 +81,276 @@ class _VaultScreenState extends State<VaultScreen>
       oldWidget.settingsStore.removeListener(_syncFromStores);
       widget.settingsStore.addListener(_syncFromStores);
     }
-    _syncFromStores();
+    _syncFromStores(resetVisibleWindow: true);
   }
 
   @override
   void dispose() {
+    _searchDebounceTimer?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    _searchController.dispose();
+    _selectedCategoryNotifier.dispose();
+    _searchQueryNotifier.dispose();
+    _listStateNotifier.dispose();
     widget.store.removeListener(_syncFromStores);
     widget.settingsStore.removeListener(_syncFromStores);
     super.dispose();
   }
 
-  List<VaultRecord> _computeVisibleRecords() {
-    if (_selectedCategory == null) {
-      return widget.store.sortedRecords;
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final state = _listStateNotifier.value;
+    if (!state.hasMore) return;
+    final position = _scrollController.position;
+    final remaining = position.maxScrollExtent - position.pixels;
+    if (remaining <= _loadMoreThreshold) {
+      _expandVisibleWindow();
     }
-    return widget.store.recordsForCategory(_selectedCategory!);
   }
 
-  bool _sameRecords(List<VaultRecord> a, List<VaultRecord> b) {
-    if (identical(a, b)) return true;
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i].id != b[i].id || a[i].updatedAt != b[i].updatedAt) {
+  void _expandVisibleWindow() {
+    final state = _listStateNotifier.value;
+    if (!state.hasMore) return;
+
+    // Performance: page records in chunks to keep first build and updates light.
+    final nextVisible = math.min(state.visibleCount + _pageSize, state.total);
+    if (nextVisible == state.visibleCount) return;
+    _listStateNotifier.value = state.copyWith(visibleCount: nextVisible);
+  }
+
+  void _onCategoryChanged(RecordCategory? category) {
+    if (_selectedCategoryNotifier.value == category) return;
+    _selectedCategoryNotifier.value = category;
+    _syncFromStores(resetVisibleWindow: true);
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+  }
+
+  void _onSearchChanged(String rawQuery) {
+    _searchDebounceTimer?.cancel();
+    _searchDebounceTimer = Timer(_searchDebounce, () {
+      if (!mounted) return;
+      final query = rawQuery.trim().toLowerCase();
+      if (_searchQueryNotifier.value == query) return;
+      _searchQueryNotifier.value = query;
+      _syncFromStores(resetVisibleWindow: true);
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+    });
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _syncFromStores({bool resetVisibleWindow = false}) {
+    final selectedCategory = _selectedCategoryNotifier.value;
+    final searchQuery = _searchQueryNotifier.value;
+    final compact =
+        widget.settingsStore.settings.cardStyle == RecordCardStyle.compact;
+    final sourceRecords = selectedCategory == null
+        ? widget.store.sortedRecords
+        : widget.store.recordsForCategory(selectedCategory);
+    final records = searchQuery.isEmpty
+        ? sourceRecords
+        : _filterBySearch(sourceRecords, searchQuery);
+
+    final previous = _listStateNotifier.value;
+    final recordsChanged = !_sameRecords(previous.records, records);
+    final compactChanged = previous.compact != compact;
+    if (!recordsChanged && !compactChanged && !resetVisibleWindow) {
+      return;
+    }
+
+    if (recordsChanged) {
+      _dropUnusedRenderData(records);
+    }
+
+    final nextVisible = resetVisibleWindow || recordsChanged || compactChanged
+        ? _initialVisibleCount(records.length)
+        : math.min(previous.visibleCount, records.length);
+
+    _listStateNotifier.value = _VaultListState(
+      records: records,
+      compact: compact,
+      visibleCount: nextVisible,
+    );
+  }
+
+  int _initialVisibleCount(int total) {
+    return math.min(total, _pageSize);
+  }
+
+  bool _sameRecords(List<VaultRecord> left, List<VaultRecord> right) {
+    if (identical(left, right)) return true;
+    if (left.length != right.length) return false;
+    for (var i = 0; i < left.length; i++) {
+      final a = left[i];
+      final b = right[i];
+      if (a.id != b.id || a.updatedAt != b.updatedAt) {
         return false;
       }
     }
     return true;
   }
 
-  void _syncFromStores() {
-    final nextCardStyle = widget.settingsStore.settings.cardStyle;
-    final nextRecords = _computeVisibleRecords();
-    if (nextCardStyle == _cardStyle && _sameRecords(nextRecords, _records)) {
-      return;
-    }
-    if (!mounted) return;
-    setState(() {
-      _cardStyle = nextCardStyle;
-      _records = nextRecords;
-    });
+  void _dropUnusedRenderData(List<VaultRecord> records) {
+    final ids = records.map((record) => record.id).toSet();
+    _renderDataCache.removeWhere((id, _) => !ids.contains(id));
+    _searchIndexCache.removeWhere((id, _) => !ids.contains(id));
   }
 
-  void _onCategoryChanged(RecordCategory? category) {
-    if (_selectedCategory == category) return;
-    setState(() {
-      _selectedCategory = category;
-      _records = _computeVisibleRecords();
-    });
+  List<VaultRecord> _filterBySearch(List<VaultRecord> source, String query) {
+    // Performance: search matching is pre-normalized and cached per record update.
+    final filtered = <VaultRecord>[];
+    for (final record in source) {
+      if (_resolveSearchIndex(record).normalized.contains(query)) {
+        filtered.add(record);
+      }
+    }
+    return filtered;
+  }
+
+  _SearchIndexData _resolveSearchIndex(VaultRecord record) {
+    final cached = _searchIndexCache[record.id];
+    if (cached != null && cached.updatedAt == record.updatedAt) {
+      return cached;
+    }
+    final next = _SearchIndexData(
+      updatedAt: record.updatedAt,
+      normalized:
+          '${record.title} ${record.subtitle} ${record.accountName} ${record.websiteOrDescription} ${record.note}'
+              .toLowerCase(),
+    );
+    _searchIndexCache[record.id] = next;
+    return next;
+  }
+
+  _RecordRenderData _resolveRenderData(VaultRecord record) {
+    final cached = _renderDataCache[record.id];
+    if (cached != null && cached.updatedAt == record.updatedAt) {
+      return cached;
+    }
+    final next = _RecordRenderData(
+      updatedAt: record.updatedAt,
+      analysis: widget.store.analysisForRecord(record),
+      maskedPassword: widget.store.maskedPasswordForRecord(record),
+    );
+    _renderDataCache[record.id] = next;
+    return next;
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final pr = context.pr;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final records = _records;
-    final compact = _cardStyle == RecordCardStyle.compact;
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
 
-    return CustomScrollView(
-      key: const PageStorageKey<String>('vault-scroll'),
-      cacheExtent: 900,
-      slivers: [
-        SliverToBoxAdapter(
-          child: RepaintBoundary(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: _VaultTopArea(
-                selectedCategory: _selectedCategory,
-                onCategoryChanged: _onCategoryChanged,
-                onCreate: widget.onCreate,
-              ),
-            ),
-          ),
-        ),
-        if (records.isEmpty)
-          SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(
-              child: Text(
-                context.tr(
-                  'Bu filtrede kayit bulunmuyor.',
-                  'No records match this filter.',
-                ),
-                style: TextStyle(color: pr.textMuted),
-              ),
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 120),
-            sliver: SliverLayoutBuilder(
-              builder: (context, constraints) {
-                final width = constraints.crossAxisExtent;
-                final useGrid = compact ? width >= 780 : width >= 920;
-                final baseSpacing = compact ? 8.0 : 10.0;
-                final spacing = isDark ? baseSpacing : baseSpacing + 2;
-
-                if (!useGrid) {
-                  return SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final record = records[index];
-                        final isLast = index == records.length - 1;
-                        return Padding(
-                          padding: EdgeInsets.only(
-                            bottom: isLast ? 0 : spacing,
-                          ),
-                          child: RepaintBoundary(
-                            child: VaultRecordCard(
-                              key: ValueKey<String>(record.id),
-                              compact: compact,
-                              record: record,
-                              analysis: widget.store.analysisForRecord(record),
-                              maskedPassword: widget.store
-                                  .maskedPasswordForRecord(record),
-                              onToggleFavorite: () {
-                                widget.store.toggleFavorite(record.id);
-                              },
-                              onEdit: () {
-                                widget.onEdit(record);
-                              },
-                              onDelete: () {
-                                widget.store.deleteRecord(record.id);
-                              },
-                              onTap: () {
-                                widget.onEdit(record);
-                              },
-                            ),
-                          ),
-                        );
-                      },
-                      childCount: records.length,
-                      addAutomaticKeepAlives: false,
-                      addRepaintBoundaries: false,
-                      addSemanticIndexes: false,
-                    ),
-                  );
-                }
-
-                return SliverGrid(
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final record = records[index];
-                      return RepaintBoundary(
-                        child: VaultRecordCard(
-                          key: ValueKey<String>(record.id),
-                          compact: compact,
-                          record: record,
-                          analysis: widget.store.analysisForRecord(record),
-                          maskedPassword: widget.store.maskedPasswordForRecord(
-                            record,
-                          ),
-                          onToggleFavorite: () {
-                            widget.store.toggleFavorite(record.id);
-                          },
-                          onEdit: () {
-                            widget.onEdit(record);
-                          },
-                          onDelete: () {
-                            widget.store.deleteRecord(record.id);
-                          },
-                          onTap: () {
-                            widget.onEdit(record);
-                          },
-                        ),
-                      );
-                    },
-                    childCount: records.length,
-                    addAutomaticKeepAlives: false,
-                    addRepaintBoundaries: false,
-                    addSemanticIndexes: false,
-                  ),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: spacing,
-                    crossAxisSpacing: spacing,
-                    childAspectRatio: compact ? 1.5 : 1.34,
-                  ),
+    return Column(
+      children: [
+        RepaintBoundary(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: ValueListenableBuilder<RecordCategory?>(
+              valueListenable: _selectedCategoryNotifier,
+              builder: (context, selectedCategory, _) {
+                return _VaultTopArea(
+                  selectedCategory: selectedCategory,
+                  onCategoryChanged: _onCategoryChanged,
+                  searchController: _searchController,
+                  onSearchChanged: _onSearchChanged,
+                  onCreate: widget.onCreate,
                 );
               },
             ),
           ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: ValueListenableBuilder<_VaultListState>(
+            valueListenable: _listStateNotifier,
+            builder: (context, state, _) {
+              if (state.records.isEmpty) {
+                return Center(
+                  child: Text(
+                    context.tr(
+                      'Bu filtrede kayit bulunmuyor.',
+                      'No records match this filter.',
+                    ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: pr.textMuted),
+                  ),
+                );
+              }
+
+              final visibleCount = state.visibleCount;
+              final childCount = visibleCount + (state.hasMore ? 1 : 0);
+              final spacing = state.compact ? 8.0 : 10.0;
+
+              return ListView.builder(
+                key: const PageStorageKey<String>('vault-record-list'),
+                controller: _scrollController,
+                cacheExtent: 1000,
+                padding: EdgeInsets.fromLTRB(16, 8, 16, 176 + safeBottom),
+                itemCount: childCount,
+                itemBuilder: (context, index) {
+                  if (index >= visibleCount) {
+                    return const _LoadMoreListTile();
+                  }
+
+                  final record = state.records[index];
+                  final renderData = _resolveRenderData(record);
+
+                  return Padding(
+                    padding: EdgeInsets.only(bottom: spacing),
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 920),
+                        child: RepaintBoundary(
+                          child: VaultRecordCard(
+                            key: ValueKey<String>(record.id),
+                            compact: state.compact,
+                            record: record,
+                            analysis: renderData.analysis,
+                            maskedPassword: renderData.maskedPassword,
+                            onToggleFavorite: () async {
+                              try {
+                                await widget.store.toggleFavorite(record.id);
+                              } on VaultStoreException catch (error) {
+                                _snack(error.message);
+                              }
+                            },
+                            onEdit: () {
+                              widget.onEdit(record);
+                            },
+                            onDelete: () async {
+                              try {
+                                await widget.store.deleteRecord(record.id);
+                              } on VaultStoreException catch (error) {
+                                _snack(error.message);
+                              }
+                            },
+                            onTap: () {
+                              widget.onEdit(record);
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
       ],
     );
   }
@@ -245,11 +360,15 @@ class _VaultTopArea extends StatelessWidget {
   const _VaultTopArea({
     required this.selectedCategory,
     required this.onCategoryChanged,
+    required this.searchController,
+    required this.onSearchChanged,
     required this.onCreate,
   });
 
   final RecordCategory? selectedCategory;
   final ValueChanged<RecordCategory?> onCategoryChanged;
+  final TextEditingController searchController;
+  final ValueChanged<String> onSearchChanged;
   final VoidCallback onCreate;
 
   @override
@@ -267,9 +386,9 @@ class _VaultTopArea extends StatelessWidget {
             border: Border.all(color: pr.panelBorder),
             boxShadow: [
               BoxShadow(
-                color: pr.panelShadow.withValues(alpha: 0.85),
-                blurRadius: 12,
-                offset: const Offset(0, 5),
+                color: pr.panelShadow.withValues(alpha: 0.45),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
@@ -278,25 +397,33 @@ class _VaultTopArea extends StatelessWidget {
               Expanded(
                 child: Text(
                   context.tr('Kayit Kasasi', 'Vault'),
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              FilledButton.icon(
-                onPressed: onCreate,
-                style: FilledButton.styleFrom(
-                  textStyle: const TextStyle(
-                    inherit: false,
-                    fontSize: 14,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
                 ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: onCreate,
                 icon: const Icon(Icons.add_rounded),
                 label: Text(context.tr('Yeni Kayit', 'New Record')),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: searchController,
+          textInputAction: TextInputAction.search,
+          onChanged: onSearchChanged,
+          decoration: InputDecoration(
+            prefixIcon: const Icon(Icons.search_rounded),
+            hintText: context.tr(
+              'Kasa icinde ara (baslik, platform, hesap...)',
+              'Search in vault (title, platform, account...)',
+            ),
           ),
         ),
         const SizedBox(height: 10),
@@ -323,6 +450,96 @@ class _VaultTopArea extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+@immutable
+class _VaultListState {
+  const _VaultListState({
+    required this.records,
+    required this.compact,
+    required this.visibleCount,
+  });
+
+  final List<VaultRecord> records;
+  final bool compact;
+  final int visibleCount;
+
+  int get total => records.length;
+  bool get hasMore => visibleCount < total;
+
+  factory _VaultListState.empty({required bool compact}) {
+    return _VaultListState(
+      records: const <VaultRecord>[],
+      compact: compact,
+      visibleCount: 0,
+    );
+  }
+
+  _VaultListState copyWith({
+    List<VaultRecord>? records,
+    bool? compact,
+    int? visibleCount,
+  }) {
+    return _VaultListState(
+      records: records ?? this.records,
+      compact: compact ?? this.compact,
+      visibleCount: visibleCount ?? this.visibleCount,
+    );
+  }
+}
+
+class _RecordRenderData {
+  const _RecordRenderData({
+    required this.updatedAt,
+    required this.analysis,
+    required this.maskedPassword,
+  });
+
+  final DateTime updatedAt;
+  final PasswordAnalysis analysis;
+  final String maskedPassword;
+}
+
+class _SearchIndexData {
+  const _SearchIndexData({required this.updatedAt, required this.normalized});
+
+  final DateTime updatedAt;
+  final String normalized;
+}
+
+class _LoadMoreListTile extends StatelessWidget {
+  const _LoadMoreListTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Center(
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.2,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              context.tr('Kayitlar yukleniyor...', 'Loading records...'),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

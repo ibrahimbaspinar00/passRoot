@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
 import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
@@ -22,9 +22,18 @@ class SecurityDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final title = switch (type) {
-      SecurityDetailType.strong => context.tr('Guclu Sifreler', 'Strong Passwords'),
-      SecurityDetailType.weak => context.tr('Zayif Parolalar', 'Weak Passwords'),
-      SecurityDetailType.reused => context.tr('Ayni Sifre Kullanilanlar', 'Reused Passwords'),
+      SecurityDetailType.strong => context.tr(
+        'Guclu Sifreler',
+        'Strong Passwords',
+      ),
+      SecurityDetailType.weak => context.tr(
+        'Zayif Parolalar',
+        'Weak Passwords',
+      ),
+      SecurityDetailType.reused => context.tr(
+        'Ayni Sifre Kullanilanlar',
+        'Reused Passwords',
+      ),
       SecurityDetailType.total => context.tr('Tum Kayitlar', 'All Records'),
     };
 
@@ -93,7 +102,10 @@ class _WeakList extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     if (records.isEmpty) {
       return _EmptyState(
-        message: context.tr('Zayif parola tespit edilmedi.', 'No weak passwords found.'),
+        message: context.tr(
+          'Zayif parola tespit edilmedi.',
+          'No weak passwords found.',
+        ),
       );
     }
 
@@ -178,7 +190,10 @@ class _ReusedList extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     if (groups.isEmpty) {
       return _EmptyState(
-        message: context.tr('Ayni sifre kullanimi bulunmuyor.', 'No password reuse found.'),
+        message: context.tr(
+          'Ayni sifre kullanimi bulunmuyor.',
+          'No password reuse found.',
+        ),
       );
     }
 
@@ -214,10 +229,12 @@ class _ReusedList extends StatelessWidget {
               children: [
                 Text(
                   context.tr(
-                    'Grup (${entry.value.length}) • ${_maskedPassword(entry.key)}',
-                    'Group (${entry.value.length}) • ${_maskedPassword(entry.key)}',
+                    'Grup (${entry.value.length}) â€¢ ${_maskedPassword(entry.key)}',
+                    'Group (${entry.value.length}) â€¢ ${_maskedPassword(entry.key)}',
                   ),
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 8),
                 for (final record in entry.value)
@@ -227,7 +244,7 @@ class _ReusedList extends StatelessWidget {
                     leading: Icon(record.category.icon),
                     title: Text(record.title),
                     subtitle: Text(
-                      '${record.category.localizedLabel(context)} • ${record.accountName}',
+                      '${record.category.localizedLabel(context)} â€¢ ${record.accountName}',
                     ),
                   ),
               ],
@@ -248,7 +265,9 @@ class _AllRecordsList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (records.isEmpty) {
-      return _EmptyState(message: context.tr('Kayit bulunmuyor.', 'No records found.'));
+      return _EmptyState(
+        message: context.tr('Kayit bulunmuyor.', 'No records found.'),
+      );
     }
 
     return ListView.separated(
@@ -308,7 +327,9 @@ class _DetailTileHeader extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 2),
-              Text('${record.category.localizedLabel(context)} • ${record.accountName}'),
+              Text(
+                '${record.category.localizedLabel(context)} â€¢ ${record.accountName}',
+              ),
             ],
           ),
         ),
@@ -327,11 +348,7 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final pr = context.pr;
     return Center(
-      child: Text(
-        message,
-        style: TextStyle(color: pr.textMuted, fontSize: 15),
-      ),
+      child: Text(message, style: TextStyle(color: pr.textMuted, fontSize: 15)),
     );
   }
 }
-

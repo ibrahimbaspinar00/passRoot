@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 enum RecordCategory {
   website,
+  email,
   socialMedia,
   bank,
   cardInfo,
   app,
+  licenseKey,
   gaming,
   wifi,
   secureNote,
@@ -17,6 +19,8 @@ extension RecordCategoryX on RecordCategory {
     switch (this) {
       case RecordCategory.website:
         return 'Web Sitesi';
+      case RecordCategory.email:
+        return 'E-posta';
       case RecordCategory.socialMedia:
         return 'Sosyal Medya';
       case RecordCategory.bank:
@@ -25,6 +29,8 @@ extension RecordCategoryX on RecordCategory {
         return 'Kart Bilgisi';
       case RecordCategory.app:
         return 'Uygulama';
+      case RecordCategory.licenseKey:
+        return 'Lisans Anahtari';
       case RecordCategory.gaming:
         return 'Oyun';
       case RecordCategory.wifi:
@@ -40,6 +46,8 @@ extension RecordCategoryX on RecordCategory {
     switch (this) {
       case RecordCategory.website:
         return 'Website';
+      case RecordCategory.email:
+        return 'E-mail';
       case RecordCategory.socialMedia:
         return 'Social Media';
       case RecordCategory.bank:
@@ -48,6 +56,8 @@ extension RecordCategoryX on RecordCategory {
         return 'Card Info';
       case RecordCategory.app:
         return 'Application';
+      case RecordCategory.licenseKey:
+        return 'License Key';
       case RecordCategory.gaming:
         return 'Gaming';
       case RecordCategory.wifi:
@@ -60,7 +70,8 @@ extension RecordCategoryX on RecordCategory {
   }
 
   String localizedLabel(BuildContext context) {
-    final isEnglish = Localizations.maybeLocaleOf(context)?.languageCode == 'en';
+    final isEnglish =
+        Localizations.maybeLocaleOf(context)?.languageCode == 'en';
     return isEnglish ? labelEn : label;
   }
 
@@ -68,6 +79,8 @@ extension RecordCategoryX on RecordCategory {
     switch (this) {
       case RecordCategory.website:
         return Icons.public_rounded;
+      case RecordCategory.email:
+        return Icons.alternate_email_rounded;
       case RecordCategory.socialMedia:
         return Icons.groups_rounded;
       case RecordCategory.bank:
@@ -76,6 +89,8 @@ extension RecordCategoryX on RecordCategory {
         return Icons.credit_card_rounded;
       case RecordCategory.app:
         return Icons.apps_rounded;
+      case RecordCategory.licenseKey:
+        return Icons.vpn_key_rounded;
       case RecordCategory.gaming:
         return Icons.sports_esports_rounded;
       case RecordCategory.wifi:
@@ -93,16 +108,17 @@ extension RecordCategoryX on RecordCategory {
 RecordCategory recordCategoryFromStorage(String raw) {
   return switch (raw) {
     'website' => RecordCategory.website,
+    'email' => RecordCategory.email,
     'socialMedia' => RecordCategory.socialMedia,
     'bank' => RecordCategory.bank,
     'cardInfo' => RecordCategory.cardInfo,
     'app' => RecordCategory.app,
+    'licenseKey' => RecordCategory.licenseKey,
     'gaming' => RecordCategory.gaming,
     'wifi' => RecordCategory.wifi,
     'secureNote' => RecordCategory.secureNote,
     'other' => RecordCategory.other,
     'bankAccount' => RecordCategory.bank,
-    'email' => RecordCategory.website,
     'shopping' => RecordCategory.website,
     'business' => RecordCategory.secureNote,
     'education' => RecordCategory.secureNote,
@@ -112,6 +128,10 @@ RecordCategory recordCategoryFromStorage(String raw) {
     'identityInfo' => RecordCategory.secureNote,
     'wallet' => RecordCategory.cardInfo,
     'identity' => RecordCategory.secureNote,
+    'mail' => RecordCategory.email,
+    'emailAccount' => RecordCategory.email,
+    'license' => RecordCategory.licenseKey,
+    'productKey' => RecordCategory.licenseKey,
     _ => RecordCategory.other,
   };
 }
@@ -229,7 +249,9 @@ class VaultRecord {
     final websiteOrDescription = (json['websiteOrDescription'] as String? ?? '')
         .trim();
     final platform = (json['platform'] as String? ?? '').trim();
-    final resolvedPlatform = platform.isNotEmpty ? platform : websiteOrDescription;
+    final resolvedPlatform = platform.isNotEmpty
+        ? platform
+        : websiteOrDescription;
 
     return VaultRecord(
       id: (json['id'] as String? ?? now.microsecondsSinceEpoch.toString()),
