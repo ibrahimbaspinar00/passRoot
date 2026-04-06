@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/app_theme.dart';
 import '../../l10n/lang_x.dart';
+import '../../services/pin_security_service.dart';
 
 class CreatePinScreen extends StatefulWidget {
   const CreatePinScreen({
@@ -45,11 +46,12 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
     if (widget.busy) return;
     final pin = _pinController.text.trim();
     final repeat = _repeatController.text.trim();
-    if (!RegExp(r'^\d{4,8}$').hasMatch(pin)) {
+
+    if (!PinSecurityService.isStrongPinCandidate(pin)) {
       setState(() {
         _localError = context.tr(
-          'PIN 4-8 rakam olmali.',
-          'PIN must be 4-8 digits.',
+          PinSecurityService.enrollmentPolicyLabelTr(),
+          PinSecurityService.enrollmentPolicyLabelEn(),
         );
       });
       return;
@@ -63,6 +65,7 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
       });
       return;
     }
+
     setState(() {
       _localError = null;
     });
@@ -130,7 +133,7 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           const SizedBox(height: 16),
                           Text(
                             context.tr(
-                              'Giriş PIN’i Oluştur',
+                              'Giris PIN\'i Olustur',
                               'Create Access PIN',
                             ),
                             style: theme.textTheme.headlineSmall?.copyWith(
@@ -140,8 +143,8 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           const SizedBox(height: 8),
                           Text(
                             context.tr(
-                              'Bu uygulama hassas veriler saklar. Güvenli başlangıç için 4-8 haneli bir PIN belirleyin.',
-                              'Set a 4-8 digit PIN for app security.',
+                              'Bu uygulama hassas veri saklar. Sayisal PIN icin 8-12 hane, alfanumerik kod icin en az bir harf + bir rakam ile 8-24 karakter kullanin.',
+                              'This app stores sensitive data. Use 8-12 digits for numeric PIN or 8-24 alphanumeric characters with at least one letter and one digit.',
                             ),
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: pr.textMuted,
@@ -151,15 +154,20 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           const SizedBox(height: 14),
                           TextField(
                             controller: _pinController,
-                            maxLength: 8,
-                            keyboardType: TextInputType.number,
+                            maxLength: PinSecurityService.maxAlphanumericLength,
+                            keyboardType: TextInputType.visiblePassword,
                             obscureText: _pinHidden,
                             enabled: !widget.busy,
                             inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[A-Za-z0-9]'),
+                              ),
                             ],
                             decoration: InputDecoration(
-                              labelText: context.tr('Yeni PIN', 'New PIN'),
+                              labelText: context.tr(
+                                'Yeni PIN / Kod',
+                                'New PIN / Code',
+                              ),
                               suffixIcon: IconButton(
                                 onPressed: widget.busy
                                     ? null
@@ -178,15 +186,20 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           ),
                           TextField(
                             controller: _repeatController,
-                            maxLength: 8,
-                            keyboardType: TextInputType.number,
+                            maxLength: PinSecurityService.maxAlphanumericLength,
+                            keyboardType: TextInputType.visiblePassword,
                             obscureText: _repeatHidden,
                             enabled: !widget.busy,
                             inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[A-Za-z0-9]'),
+                              ),
                             ],
                             decoration: InputDecoration(
-                              labelText: context.tr('PIN Tekrar', 'Repeat PIN'),
+                              labelText: context.tr(
+                                'PIN / Kod Tekrar',
+                                'Repeat PIN / Code',
+                              ),
                               suffixIcon: IconButton(
                                 onPressed: widget.busy
                                     ? null
@@ -233,7 +246,9 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                                     ),
                                   )
                                 : const Icon(Icons.lock_reset_rounded),
-                            label: Text(context.tr('PIN’i Kaydet', 'Save PIN')),
+                            label: Text(
+                              context.tr('PIN\'i Kaydet', 'Save PIN'),
+                            ),
                           ),
                         ],
                       ),

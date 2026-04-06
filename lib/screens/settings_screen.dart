@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
@@ -8,12 +10,19 @@ import 'package:path/path.dart' as p;
 import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
 import '../models/app_settings.dart';
+import '../models/vault_record.dart';
+import '../screens/profile/profile_screen.dart';
+import '../services/biometric_auth_service.dart';
 import '../services/vault_crypto_background_service.dart';
 import '../services/vault_crypto_service.dart';
 import '../services/vault_file_service.dart';
+import '../services/vault_key_service.dart';
+import '../state/account_store.dart';
 import '../state/app_settings_store.dart';
+import '../state/google_auth_store.dart';
 import '../state/vault_store.dart';
 import '../utils/app_logger.dart';
+import '../widgets/google_auth_status_card.dart';
 import '../widgets/pin_dialogs.dart';
 import '../widgets/settings_section_card.dart';
 
@@ -22,10 +31,16 @@ class SettingsScreen extends StatefulWidget {
     super.key,
     required this.store,
     required this.settingsStore,
+    required this.accountStore,
+    required this.googleAuthStore,
+    this.focusGoogleAuthSignal,
   });
 
   final VaultStore store;
   final AppSettingsStore settingsStore;
+  final AccountStore accountStore;
+  final GoogleAuthStore googleAuthStore;
+  final ValueListenable<int>? focusGoogleAuthSignal;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -35,18 +50,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const String _encryptedBackupFormat = 'passroot-encrypted-backup-v1';
 
   late final VaultCryptoBackgroundService _cryptoWorker;
+  late final BiometricAuthService _biometricAuthService;
   PackageInfo? _packageInfo;
   bool _ioBusy = false;
   String? _ioStatus;
   String? _lastImportPath;
+  late final ScrollController _scrollController;
+  final GlobalKey _googleAuthSectionKey = GlobalKey();
+  int _lastFocusSignalValue = 0;
+  bool _biometricAvailable = false;
 
   @override
   void initState() {
     super.initState();
     _cryptoWorker = const VaultCryptoBackgroundService();
+    _biometricAuthService = BiometricAuthService();
+    _scrollController = ScrollController();
     widget.settingsStore.refreshPinAvailability();
+    _lastFocusSignalValue = widget.focusGoogleAuthSignal?.value ?? 0;
+    widget.focusGoogleAuthSignal?.addListener(_onGoogleAuthFocusSignal);
     _loadPackageInfo();
     _loadImportPreferences();
+    _loadBiometricAvailability();
+  }
+
+  @override
+  void didUpdateWidget(covariant SettingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusGoogleAuthSignal == widget.focusGoogleAuthSignal) {
+      return;
+    }
+    oldWidget.focusGoogleAuthSignal?.removeListener(_onGoogleAuthFocusSignal);
+    _lastFocusSignalValue = widget.focusGoogleAuthSignal?.value ?? 0;
+    widget.focusGoogleAuthSignal?.addListener(_onGoogleAuthFocusSignal);
+  }
+
+  @override
+  void dispose() {
+    widget.focusGoogleAuthSignal?.removeListener(_onGoogleAuthFocusSignal);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onGoogleAuthFocusSignal() {
+    final signal = widget.focusGoogleAuthSignal?.value ?? 0;
+    if (signal == _lastFocusSignalValue) {
+      return;
+    }
+    _lastFocusSignalValue = signal;
+    if (!mounted) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final sectionContext = _googleAuthSectionKey.currentContext;
+      if (sectionContext != null) {
+        Scrollable.ensureVisible(
+          sectionContext,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+          alignment: 0.05,
+        );
+      } else if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          0,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    });
   }
 
   Future<void> _loadPackageInfo() async {
@@ -72,6 +146,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _lastImportPath = path;
     });
+  }
+
+  Future<void> _loadBiometricAvailability() async {
+    final available = await _biometricAuthService.canUseBiometrics();
+    if (!mounted) return;
+    setState(() {
+      _biometricAvailable = available;
+    });
+    if (!available && widget.settingsStore.settings.biometricUnlockEnabled) {
+      await widget.settingsStore.setBiometricUnlockEnabled(false);
+    }
   }
 
   String get _appVersion {
@@ -354,6 +439,143 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return result;
   }
 
+  Future<String?> _askMasterPassword({
+    required String title,
+    required String actionText,
+  }) async {
+    final controller = TextEditingController();
+    String? errorText;
+    var hidden = true;
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(title),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    obscureText: hidden,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) {
+                      final value = controller.text.trim();
+                      if (value.length < 12) {
+                        setDialogState(() {
+                          errorText = context.tr(
+                            'Master password en az 12 karakter olmali.',
+                            'Master password must be at least 12 characters.',
+                          );
+                        });
+                        return;
+                      }
+                      Navigator.pop(context, value);
+                    },
+                    decoration: InputDecoration(
+                      labelText: context.tr(
+                        'Master Password',
+                        'Master Password',
+                      ),
+                      errorText: errorText,
+                      suffixIcon: IconButton(
+                        onPressed: () {
+                          setDialogState(() {
+                            hidden = !hidden;
+                          });
+                        },
+                        icon: Icon(
+                          hidden
+                              ? Icons.visibility_rounded
+                              : Icons.visibility_off_rounded,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(context.tr('Iptal', 'Cancel')),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final value = controller.text.trim();
+                    if (value.length < 12) {
+                      setDialogState(() {
+                        errorText = context.tr(
+                          'Master password en az 12 karakter olmali.',
+                          'Master password must be at least 12 characters.',
+                        );
+                      });
+                      return;
+                    }
+                    Navigator.pop(context, value);
+                  },
+                  child: Text(actionText),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    controller.dispose();
+    return result;
+  }
+
+  Future<bool> _reauthForSensitiveAction(String reason) async {
+    if (widget.settingsStore.settings.biometricUnlockEnabled &&
+        _biometricAvailable) {
+      final biometricOk = await _biometricAuthService.authenticate(
+        reason: reason,
+      );
+      if (biometricOk) {
+        return true;
+      }
+    }
+
+    await widget.settingsStore.refreshPinAvailability(notify: false);
+    if (!mounted) return false;
+
+    if (widget.settingsStore.pinAvailable) {
+      return PinDialogs.verifyPin(
+        context: context,
+        onVerify: (pin) =>
+            widget.settingsStore.vaultKeyService.unlockWithPin(pin),
+        title: context.tr('Guvenlik Dogrulamasi', 'Security Verification'),
+        description: context.tr(
+          'Hassas islem: devam etmek icin PIN girin.',
+          'Sensitive action: enter your PIN to continue.',
+        ),
+      );
+    }
+
+    final master = await _askMasterPassword(
+      title: context.tr('Master Password Dogrulama', 'Verify Master Password'),
+      actionText: context.tr('Dogrula', 'Verify'),
+    );
+    if (master == null) {
+      return false;
+    }
+    final unlock = await widget.settingsStore.vaultKeyService
+        .unlockWithMasterPasswordDetailed(master);
+    if (!unlock.success && mounted) {
+      _snack(
+        unlock.message ??
+            context.tr(
+              'Master password dogrulanamadi.',
+              'Master password verification failed.',
+            ),
+      );
+    }
+    return unlock.success;
+  }
+
   String _buildEncryptedEnvelope(String encryptedPayload) {
     return jsonEncode(<String, dynamic>{
       'format': _encryptedBackupFormat,
@@ -451,7 +673,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _exportData() async {
+    final confirm = await _confirm(
+      title: context.tr('Sifreli Disa Aktarim', 'Encrypted Export'),
+      body: context.tr(
+        'Bu islem kasa verilerinizin sifreli bir kopyasini olusturur. Dosyaya erisen kisi, sifreleme anahtarini da ele gecirirse verilere ulasabilir.',
+        'This action creates an encrypted copy of your vault. Anyone who gets both the file and its encryption key can access your data.',
+      ),
+      okText: context.tr('Devam Et', 'Continue'),
+      danger: true,
+    );
+    if (!confirm) {
+      return;
+    }
+    if (!mounted) return;
+    final initialStatus = context.tr(
+      'Export baslatiliyor...',
+      'Starting export...',
+    );
+
     await _setBusy(() async {
+      final verified = await _reauthForSensitiveAction(
+        context.tr(
+          'Sifreli disa aktarma islemi icin kimlik dogrulayin.',
+          'Verify identity for encrypted export.',
+        ),
+      );
+      if (!verified) {
+        return;
+      }
+      if (!mounted) return;
       _setIoStatus(
         context.tr(
           'Sifreleme anahtari bekleniyor...',
@@ -502,68 +752,101 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Encrypted export completed: ${file.path}',
         ),
       );
-    }, initialStatus: context.tr('Export baslatiliyor...', 'Starting export...'));
+    }, initialStatus: initialStatus);
   }
 
   Future<void> _backupNow() async {
-    await _setBusy(
-      () async {
-        _setIoStatus(
-          context.tr(
-            'Sifreleme anahtari bekleniyor...',
-            'Waiting for encryption key...',
-          ),
-        );
-        final key = await _askEncryptionKey(
-          title: context.tr('Sifreli Yedek Olustur', 'Create Encrypted Backup'),
-          actionText: context.tr('Yedekle', 'Backup'),
-          requireConfirmation: true,
-        );
-        if (key == null) return;
-        if (!mounted) return;
-
-        _setIoStatus(
-          context.tr(
-            'Yedek icerigi hazirlaniyor...',
-            'Preparing backup payload...',
-          ),
-        );
-        final plainPayload = await widget.store.encodeJsonInBackground(
-          pretty: false,
-        );
-        if (!mounted) return;
-        _setIoStatus(
-          context.tr('Yedek sifreleniyor...', 'Encrypting backup...'),
-        );
-        final encryptedPayload = await _cryptoWorker.encryptString(
-          plaintext: plainPayload,
-          passphrase: key,
-        );
-        if (!mounted) return;
-        _setIoStatus(
-          context.tr('Yedek dosyasi yaziliyor...', 'Writing backup file...'),
-        );
-        final file = await VaultFileService.createBackup(
-          _buildEncryptedEnvelope(encryptedPayload),
-          extension: 'pvault',
-        );
-        await widget.settingsStore.setLastBackupNow();
-        if (!mounted) return;
-        _snack(
-          context.tr(
-            'Sifreli yedek olusturuldu: ${file.path}',
-            'Encrypted backup created: ${file.path}',
-          ),
-        );
-      },
-      initialStatus: context.tr('Yedek baslatiliyor...', 'Starting backup...'),
+    final confirm = await _confirm(
+      title: context.tr('Sifreli Yedek Olustur', 'Create Encrypted Backup'),
+      body: context.tr(
+        'Bu islem cihaza sifreli yedek dosyasi yazar. Yedek dosyasini ve anahtarini guvenli saklamaniz gerekir.',
+        'This action writes an encrypted backup file to your device. Keep both the backup and its key securely.',
+      ),
+      okText: context.tr('Yedeklemeyi Baslat', 'Start Backup'),
+      danger: true,
     );
+    if (!confirm) {
+      return;
+    }
+    if (!mounted) return;
+    final initialStatus = context.tr(
+      'Yedek baslatiliyor...',
+      'Starting backup...',
+    );
+
+    await _setBusy(() async {
+      final verified = await _reauthForSensitiveAction(
+        context.tr(
+          'Yedekleme islemi icin kimlik dogrulayin.',
+          'Verify identity for backup operation.',
+        ),
+      );
+      if (!verified) {
+        return;
+      }
+      if (!mounted) return;
+      _setIoStatus(
+        context.tr(
+          'Sifreleme anahtari bekleniyor...',
+          'Waiting for encryption key...',
+        ),
+      );
+      final key = await _askEncryptionKey(
+        title: context.tr('Sifreli Yedek Olustur', 'Create Encrypted Backup'),
+        actionText: context.tr('Yedekle', 'Backup'),
+        requireConfirmation: true,
+      );
+      if (key == null) return;
+      if (!mounted) return;
+
+      _setIoStatus(
+        context.tr(
+          'Yedek icerigi hazirlaniyor...',
+          'Preparing backup payload...',
+        ),
+      );
+      final plainPayload = await widget.store.encodeJsonInBackground(
+        pretty: false,
+      );
+      if (!mounted) return;
+      _setIoStatus(context.tr('Yedek sifreleniyor...', 'Encrypting backup...'));
+      final encryptedPayload = await _cryptoWorker.encryptString(
+        plaintext: plainPayload,
+        passphrase: key,
+      );
+      if (!mounted) return;
+      _setIoStatus(
+        context.tr('Yedek dosyasi yaziliyor...', 'Writing backup file...'),
+      );
+      final file = await VaultFileService.createBackup(
+        _buildEncryptedEnvelope(encryptedPayload),
+        extension: 'pvault',
+      );
+      await widget.settingsStore.setLastBackupNow();
+      if (!mounted) return;
+      _snack(
+        context.tr(
+          'Sifreli yedek olusturuldu: ${file.path}',
+          'Encrypted backup created: ${file.path}',
+        ),
+      );
+    }, initialStatus: initialStatus);
   }
 
   Future<void> _importFromFilePath(
     String path, {
     required bool allowPlaintextFlow,
   }) async {
+    final verified = await _reauthForSensitiveAction(
+      context.tr(
+        'Iceri aktarma islemi mevcut verileri degistirebilir. Kimlik dogrulayin.',
+        'Import can replace existing records. Verify your identity.',
+      ),
+    );
+    if (!verified) {
+      return;
+    }
+
     final cleanPath = path.trim();
     if (cleanPath.isEmpty) return;
     final fileExists = await VaultFileService.exists(cleanPath);
@@ -698,6 +981,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _restoreBackup() async {
     await _setBusy(() async {
+      final verified = await _reauthForSensitiveAction(
+        context.tr(
+          'Yedekten geri yukleme islemi icin kimlik dogrulayin.',
+          'Verify identity for restore operation.',
+        ),
+      );
+      if (!verified) {
+        return;
+      }
       final backups = await VaultFileService.listBackups();
       if (!mounted) return;
       if (backups.isEmpty) {
@@ -769,9 +1061,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _clearAllRecords() async {
     final confirm = await _confirm(
-      title: context.tr('TÃ¼m Veriler Silinsin mi?', 'Delete All Data?'),
+      title: context.tr('Tum Veriler Silinsin mi?', 'Delete All Data?'),
       body: context.tr(
-        'Bu iÅŸlem geri alÄ±namaz. TÃ¼m kasa kayÄ±tlarÄ± silinecek.',
+        'Bu islem geri alinamaz. Tum kasa kayitlari silinecek.',
         'This action cannot be undone. All vault records will be deleted.',
       ),
       okText: context.tr('Sil', 'Delete'),
@@ -780,18 +1072,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!confirm) return;
 
     await _setBusy(() async {
+      final verified = await _reauthForSensitiveAction(
+        context.tr(
+          'Tum verileri silme islemi icin kimlik dogrulayin.',
+          'Verify identity before deleting all records.',
+        ),
+      );
+      if (!verified) {
+        return;
+      }
+      final snapshot = List<VaultRecord>.from(widget.store.records);
       await widget.store.clearAllRecords();
       if (!mounted) return;
-      _snack(
-        context.tr('TÃ¼m kayÄ±tlar silindi.', 'All records have been deleted.'),
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 10),
+          content: Text(
+            context.tr('Tum kayitlar silindi.', 'All records were deleted.'),
+          ),
+          action: snapshot.isEmpty
+              ? null
+              : SnackBarAction(
+                  label: context.tr('Geri Al', 'Undo'),
+                  onPressed: () {
+                    unawaited(_restoreClearedRecords(snapshot));
+                  },
+                ),
+        ),
       );
     });
+  }
+
+  Future<void> _restoreClearedRecords(List<VaultRecord> snapshot) async {
+    try {
+      await widget.store.replaceAllRecords(snapshot);
+      if (!mounted) return;
+      _snack(
+        context.tr(
+          'Silinen kayitlar geri yuklendi.',
+          'Deleted records were restored.',
+        ),
+      );
+    } on VaultStoreException catch (error) {
+      _snack(error.message);
+    }
   }
 
   Future<bool> _managePin() async {
     await widget.settingsStore.refreshPinAvailability(notify: false);
     if (!mounted) return false;
     final hasPin = widget.settingsStore.pinAvailable;
+
+    if (hasPin) {
+      final confirmChange = await _confirm(
+        title: context.tr('PIN Degistir', 'Change PIN'),
+        body: context.tr(
+          'PIN degisikligi kasa kilit akisini etkiler. Devam etmeden once kimlik dogrulamasi istenecek.',
+          'Changing PIN affects vault lock flow. Identity verification is required before continuing.',
+        ),
+        okText: context.tr('Dogrulamaya Gec', 'Proceed to Verify'),
+        danger: true,
+      );
+      if (!confirmChange) {
+        return false;
+      }
+    }
+    if (!mounted) return false;
+
+    final verified = await _reauthForSensitiveAction(
+      context.tr(
+        hasPin
+            ? 'PIN ayarini degistirmek icin kimlik dogrulayin.'
+            : 'Yeni PIN olusturmak icin kimlik dogrulayin.',
+        hasPin
+            ? 'Verify identity to change PIN.'
+            : 'Verify identity to create a new PIN.',
+      ),
+    );
+    if (!verified) {
+      return false;
+    }
+    if (!mounted) return false;
+
     if (!hasPin) {
       final newPin = await PinDialogs.askNewPin(
         context,
@@ -802,7 +1166,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
       if (newPin == null) return false;
-      await widget.settingsStore.setPinCode(newPin);
+      try {
+        await widget.settingsStore.setPinCode(newPin);
+      } on VaultKeyException catch (error) {
+        if (mounted) {
+          _snack(error.message);
+        }
+        return false;
+      }
       if (!mounted) return false;
       _snack(
         context.tr(
@@ -813,28 +1184,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return true;
     }
 
-    final verified = await PinDialogs.verifyPin(
-      context: context,
-      onVerify: widget.settingsStore.verifyPinDetailed,
-      title: context.tr('Mevcut PIN Dogrulama', 'Verify Current PIN'),
-      description: context.tr(
-        'PIN degistirmek icin mevcut PIN kodunuzu girin.',
-        'Enter current PIN to change it.',
-      ),
-    );
-    if (!mounted || !verified) return false;
-
     final newPin = await PinDialogs.askNewPin(
       context,
       title: context.tr('Yeni Giris PIN\'i', 'New Access PIN'),
       description: context.tr(
-        'Yeni PIN 4-8 rakam olmali ve kolay tahmin edilmemeli.',
-        'New PIN must be 4-8 digits and not easy to guess.',
+        'Yeni PIN, 8-12 sayisal veya en az bir harf + bir rakam iceren 8-24 karakter kod olmali.',
+        'New PIN must be 8-12 numeric or an 8-24 character code with at least one letter and one digit.',
       ),
       actionText: context.tr('PIN\'i Guncelle', 'Update PIN'),
     );
     if (newPin == null) return false;
-    await widget.settingsStore.setPinCode(newPin);
+    try {
+      await widget.settingsStore.setPinCode(newPin);
+    } on VaultKeyException catch (error) {
+      if (mounted) {
+        _snack(error.message);
+      }
+      return false;
+    }
     if (!mounted) return false;
     _snack(
       context.tr('Giris PIN\'i guncellendi.', 'Access PIN has been updated.'),
@@ -843,19 +1210,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _toggleAppLock(bool enabled) async {
-    if (enabled) {
-      await widget.settingsStore.refreshPinAvailability(notify: false);
-      if (!mounted) return;
-      if (!widget.settingsStore.pinAvailable) {
-        _snack(
-          context.tr(
-            'Uygulama kilidi iÃ§in Ã¶nce bir PIN oluÅŸturun.',
-            'Create an access PIN before enabling app lock.',
-          ),
-        );
-        final created = await _managePin();
-        if (!created) return;
+    final current = widget.settingsStore.settings.appLockEnabled;
+    if (current == enabled) {
+      return;
+    }
+    if (!enabled) {
+      final confirm = await _confirm(
+        title: context.tr('Uygulama Kilidini Kapat', 'Disable App Lock'),
+        body: context.tr(
+          'Uygulama kilidi kapatilirsa cihaz kilidi acik oldugunda kasa daha kolay erisilebilir hale gelir.',
+          'If app lock is disabled, vault access becomes easier when the device is already unlocked.',
+        ),
+        okText: context.tr('Kapat ve Dogrula', 'Disable & Verify'),
+        danger: true,
+      );
+      if (!confirm) {
+        return;
       }
+    }
+    if (!mounted) return;
+
+    final verified = await _reauthForSensitiveAction(
+      context.tr(
+        enabled
+            ? 'Uygulama kilidini etkinlestirmek icin kimlik dogrulayin.'
+            : 'Uygulama kilidini kapatmak icin kimlik dogrulayin.',
+        enabled
+            ? 'Verify identity to enable app lock.'
+            : 'Verify identity to disable app lock.',
+      ),
+    );
+    if (!verified) {
+      return;
     }
 
     await widget.settingsStore.setAppLockEnabled(enabled);
@@ -863,7 +1249,193 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _snack(
       enabled
           ? context.tr('Uygulama kilidi aktif edildi.', 'App lock enabled.')
-          : context.tr('Uygulama kilidi kapatÄ±ldÄ±.', 'App lock disabled.'),
+          : context.tr('Uygulama kilidi kapatildi.', 'App lock disabled.'),
+    );
+  }
+
+  Future<void> _toggleLockOnAppLaunch(bool enabled) async {
+    final current = widget.settingsStore.settings.lockOnAppLaunch;
+    if (current == enabled) {
+      return;
+    }
+    if (!enabled) {
+      final confirm = await _confirm(
+        title: context.tr('Acilis Kilidini Kapat', 'Disable Launch Lock'),
+        body: context.tr(
+          'Bu ayar kapatilirsa uygulama acilisinda kilit ekrani zorunlu olmaz.',
+          'If disabled, lock screen is no longer enforced at app launch.',
+        ),
+        okText: context.tr('Kapat ve Dogrula', 'Disable & Verify'),
+        danger: true,
+      );
+      if (!confirm) {
+        return;
+      }
+    }
+    if (!mounted) return;
+
+    final verified = await _reauthForSensitiveAction(
+      context.tr(
+        enabled
+            ? 'Acilis kilidini etkinlestirmek icin kimlik dogrulayin.'
+            : 'Acilis kilidini kapatmak icin kimlik dogrulayin.',
+        enabled
+            ? 'Verify identity to enable launch lock.'
+            : 'Verify identity to disable launch lock.',
+      ),
+    );
+    if (!verified) {
+      return;
+    }
+
+    await widget.settingsStore.setLockOnAppLaunch(enabled);
+    if (!mounted) return;
+    _snack(
+      enabled
+          ? context.tr(
+              'Acilista kilit zorunlu hale getirildi.',
+              'Launch lock enabled.',
+            )
+          : context.tr(
+              'Acilista kilit devre disi birakildi.',
+              'Launch lock disabled.',
+            ),
+    );
+  }
+
+  Future<void> _toggleLockOnAppResume(bool enabled) async {
+    final current = widget.settingsStore.settings.lockOnAppResume;
+    if (current == enabled) {
+      return;
+    }
+    if (!enabled) {
+      final confirm = await _confirm(
+        title: context.tr(
+          'Arka Plan Donus Kilidini Kapat',
+          'Disable Resume Lock',
+        ),
+        body: context.tr(
+          'Bu ayar kapatilirsa arka plandan donuste yeniden kilit istemeyebilir.',
+          'If disabled, the app may not request lock again when returning from background.',
+        ),
+        okText: context.tr('Kapat ve Dogrula', 'Disable & Verify'),
+        danger: true,
+      );
+      if (!confirm) {
+        return;
+      }
+    }
+    if (!mounted) return;
+
+    final verified = await _reauthForSensitiveAction(
+      context.tr(
+        enabled
+            ? 'Arka plan donus kilidini etkinlestirmek icin kimlik dogrulayin.'
+            : 'Arka plan donus kilidini kapatmak icin kimlik dogrulayin.',
+        enabled
+            ? 'Verify identity to enable resume lock.'
+            : 'Verify identity to disable resume lock.',
+      ),
+    );
+    if (!verified) {
+      return;
+    }
+
+    await widget.settingsStore.setLockOnAppResume(enabled);
+    if (!mounted) return;
+    _snack(
+      enabled
+          ? context.tr(
+              'Arka plan donusunde kilit etkin.',
+              'Resume lock enabled.',
+            )
+          : context.tr(
+              'Arka plan donusunde kilit kapatildi.',
+              'Resume lock disabled.',
+            ),
+    );
+  }
+
+  Future<void> _toggleBiometricUnlock(bool enabled) async {
+    final current = widget.settingsStore.settings.biometricUnlockEnabled;
+    if (current == enabled) {
+      return;
+    }
+    if (enabled) {
+      if (!_biometricAvailable) {
+        _snack(
+          context.tr(
+            'Bu cihazda biyometrik dogrulama kullanilamiyor.',
+            'Biometric authentication is not available on this device.',
+          ),
+        );
+        return;
+      }
+    } else {
+      final confirm = await _confirm(
+        title: context.tr(
+          'Biyometrik Kilidi Kapat',
+          'Disable Biometric Unlock',
+        ),
+        body: context.tr(
+          'Biyometrik kilit acma kapatilirsa bu hizli dogrulama katmani devre disi kalir.',
+          'If biometric unlock is disabled, this fast verification layer will be removed.',
+        ),
+        okText: context.tr('Kapat ve Dogrula', 'Disable & Verify'),
+        danger: true,
+      );
+      if (!confirm) {
+        return;
+      }
+    }
+    if (!mounted) return;
+
+    final verified = await _reauthForSensitiveAction(
+      context.tr(
+        enabled
+            ? 'Biyometrik kilit ayarini etkinlestirmek icin kimlik dogrulayin.'
+            : 'Biyometrik kilit ayarini kapatmak icin kimlik dogrulayin.',
+        enabled
+            ? 'Verify identity to enable biometric unlock.'
+            : 'Verify identity to disable biometric unlock.',
+      ),
+    );
+    if (!verified) {
+      return;
+    }
+
+    if (enabled) {
+      if (!mounted) return;
+      final biometricOk = await _biometricAuthService.authenticate(
+        reason: context.tr(
+          'PassRoot icin biyometrik girisi etkinlestirmeyi onaylayin.',
+          'Confirm enabling biometric unlock for PassRoot.',
+        ),
+      );
+      if (!mounted) return;
+      if (!biometricOk) {
+        _snack(
+          context.tr(
+            'Biyometrik dogrulama tamamlanamadi. Ayar degistirilmedi.',
+            'Biometric verification failed. Setting was not changed.',
+          ),
+        );
+        return;
+      }
+    }
+
+    await widget.settingsStore.setBiometricUnlockEnabled(enabled);
+    if (!mounted) return;
+    _snack(
+      enabled
+          ? context.tr(
+              'Biyometrik giris etkinlestirildi.',
+              'Biometric unlock enabled.',
+            )
+          : context.tr(
+              'Biyometrik giris kapatildi.',
+              'Biometric unlock disabled.',
+            ),
     );
   }
 
@@ -959,11 +1531,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _pickAutoLockOption() async {
+    final current = widget.settingsStore.settings.autoLockOption;
     final selected = await showModalBottomSheet<AutoLockOption>(
       context: context,
       showDragHandle: true,
       builder: (context) {
-        final current = widget.settingsStore.settings.autoLockOption;
         return SafeArea(
           child: ListView(
             shrinkWrap: true,
@@ -983,16 +1555,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       },
     );
-    if (selected != null) {
-      await widget.settingsStore.setAutoLockOption(selected);
+    if (selected == null || selected == current) {
+      return;
+    }
+    if (!mounted) return;
+
+    final isWeaker = selected.duration > current.duration;
+    if (isWeaker) {
+      final confirm = await _confirm(
+        title: context.tr(
+          'Daha Gevsek Otomatik Kilit',
+          'Weaker Auto Lock Setting',
+        ),
+        body: context.tr(
+          'Daha uzun sure secmek uygulamanin daha gec kilitlenmesine neden olur.',
+          'Choosing a longer delay means the app stays unlocked for longer.',
+        ),
+        okText: context.tr('Degistir ve Dogrula', 'Change & Verify'),
+        danger: true,
+      );
+      if (!confirm) {
+        return;
+      }
       if (!mounted) return;
-      _snack(
+
+      final verified = await _reauthForSensitiveAction(
         context.tr(
-          'Otomatik kilit sÃ¼resi gÃ¼ncellendi.',
-          'Auto lock duration updated.',
+          'Otomatik kilit suresini gevsetmek icin kimlik dogrulayin.',
+          'Verify identity to weaken auto lock timing.',
         ),
       );
+      if (!verified) {
+        return;
+      }
     }
+
+    await widget.settingsStore.setAutoLockOption(selected);
+    if (!mounted) return;
+    _snack(
+      context.tr(
+        'Otomatik kilit suresi guncellendi.',
+        'Auto lock duration updated.',
+      ),
+    );
   }
 
   void _openAbout() {
@@ -1042,16 +1647,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  void _openProfileCenter() {
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => ProfileScreen(
+          accountStore: widget.accountStore,
+          settingsStore: widget.settingsStore,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([widget.store, widget.settingsStore]),
+      animation: Listenable.merge([
+        widget.store,
+        widget.settingsStore,
+        widget.accountStore,
+        widget.googleAuthStore,
+      ]),
       builder: (context, _) {
         final settings = widget.settingsStore.settings;
         final strongCount = widget.store.strongRecords.length;
         final weakCount = widget.store.weakRecords.length;
 
         return ListView(
+          controller: _scrollController,
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 110),
           children: [
             if (_ioBusy && (_ioStatus ?? '').trim().isNotEmpty) ...[
@@ -1083,63 +1706,104 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 12),
             ],
             SettingsSectionCard(
-              title: context.tr('GÃ¼venlik', 'Security'),
+              key: _googleAuthSectionKey,
+              title: context.tr('Hesap', 'Account'),
+              children: [
+                GoogleAuthStatusCard(
+                  authStore: widget.googleAuthStore,
+                  signedOutTitle: context.tr(
+                    'Google Kimligini Bagla',
+                    'Connect Google Identity',
+                  ),
+                  signedOutDescription: context.tr(
+                    'Google girisi sadece bu cihazda kimlik dogrulamasi icindir. Kasa verileri yerel kalir; bulut senkronizasyonu sunulmaz.',
+                    'Google sign-in is only for identity verification on this device. Vault data remains local; cloud sync is not provided.',
+                  ),
+                  guestHint: context.tr(
+                    'Su anda misafir olarak devam ediyorsun.',
+                    'You are currently continuing as a guest.',
+                  ),
+                  signedInBadgeText: context.tr(
+                    'Kimlik baglantisi aktif',
+                    'Identity connection active',
+                  ),
+                  showSignOutButton: true,
+                  onShowMessage: _snack,
+                ),
+                const SizedBox(height: 8),
+                _actionTile(
+                  icon: Icons.manage_accounts_rounded,
+                  title: context.tr(
+                    'Yerel Profil Ayarlari',
+                    'Local Profile Settings',
+                  ),
+                  subtitle: context.tr(
+                    'Yerel hesap bilgileri ve guvenlik islemleri',
+                    'Local account information and security actions',
+                  ),
+                  onTap: _openProfileCenter,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SettingsSectionCard(
+              title: context.tr('Guvenlik', 'Security'),
               children: [
                 _switchTile(
                   icon: Icons.lock_outline_rounded,
                   title: context.tr('Uygulama Kilidi', 'App Lock'),
                   subtitle: context.tr(
                     settings.appLockEnabled
-                        ? 'AÃ§Ä±lÄ±ÅŸta PIN doÄŸrulamasÄ± aktif. PIN olmadan kasa aÃ§Ä±lamaz.'
-                        : 'KapalÄ±ysa aÃ§Ä±lÄ±ÅŸta PIN sorulmaz (gÃ¼venlik Ã¶nerilmez).',
+                        ? 'Acilista kimlik dogrulamasi aktiftir (master/PIN/biyometrik).'
+                        : 'Kapaliysa uygulama acilisinda kilit uygulanmaz (onerilmez).',
                     settings.appLockEnabled
-                        ? 'PIN verification on launch is active.'
-                        : 'If disabled, app starts without PIN prompt.',
+                        ? 'Launch authentication is active (master/PIN/biometric).'
+                        : 'If disabled, app starts without lock (not recommended).',
                   ),
                   value: settings.appLockEnabled,
-                  onChanged: _toggleAppLock,
+                  onChanged: _ioBusy ? null : _toggleAppLock,
                 ),
                 if (settings.appLockEnabled) ...[
                   const SizedBox(height: 8),
                   _switchTile(
                     icon: Icons.rocket_launch_outlined,
                     title: context.tr(
-                      'AÃ§Ä±lÄ±ÅŸta Kilidi Uygula',
+                      'Acilista Kilidi Uygula',
                       'Enforce Lock on Launch',
                     ),
                     subtitle: context.tr(
-                      'Uygulama her aÃ§Ä±lÄ±ÅŸta PIN ister.',
-                      'App starts locked on every launch.',
+                      'Uygulama her acilista kilit ekranindan baslar.',
+                      'App starts on lock screen every launch.',
                     ),
                     value: settings.lockOnAppLaunch,
-                    onChanged: widget.settingsStore.setLockOnAppLaunch,
+                    onChanged: _ioBusy ? null : _toggleLockOnAppLaunch,
                   ),
                   const SizedBox(height: 8),
                   _switchTile(
                     icon: Icons.lock_clock_outlined,
                     title: context.tr(
-                      'Arka Plandan DÃ¶nÃ¼ÅŸte Kilitle',
+                      'Arka Plandan Donuste Kilitle',
                       'Lock on Resume',
                     ),
                     subtitle: context.tr(
-                      'Arka plandan dÃ¶nÃ¼nce, seÃ§ilen sÃ¼re aÅŸÄ±ldÄ±ysa tekrar PIN ister.',
+                      'Arka plandan donunce secilen sure asildiysa tekrar kilit ister.',
                       'Re-locks after returning from background based on timeout.',
                     ),
                     value: settings.lockOnAppResume,
-                    onChanged: widget.settingsStore.setLockOnAppResume,
+                    onChanged: _ioBusy ? null : _toggleLockOnAppResume,
                   ),
                   const SizedBox(height: 8),
                   _actionTile(
                     icon: Icons.schedule_rounded,
                     title: context.tr(
-                      'Otomatik Kilit SÃ¼resi',
+                      'Otomatik Kilit Suresi',
                       'Auto Lock Delay',
                     ),
                     subtitle: context.tr(
-                      'SeÃ§ili: ${settings.autoLockOption.localizedLabel(context)}',
+                      'Secili: ${settings.autoLockOption.localizedLabel(context)}',
                       'Selected: ${settings.autoLockOption.localizedLabel(context)}',
                     ),
-                    onTap: _pickAutoLockOption,
+                    onTap: _ioBusy ? null : _pickAutoLockOption,
                   ),
                 ],
                 const SizedBox(height: 8),
@@ -1147,22 +1811,45 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.pin_outlined,
                   title: context.tr(
                     widget.settingsStore.pinAvailable
-                        ? 'Uygulama PIN\'ini DeÄŸiÅŸtir'
-                        : 'Uygulama PIN\'i OluÅŸtur',
+                        ? 'Uygulama PIN\'ini Degistir'
+                        : 'Uygulama PIN\'i Olustur',
                     widget.settingsStore.pinAvailable
                         ? 'Change App PIN'
                         : 'Create App PIN',
                   ),
                   subtitle: widget.settingsStore.pinAvailable
                       ? context.tr(
-                          'PIN korumasÄ± aktif. GÃ¼venliÄŸi dÃ¼zenli gÃ¼ncelleyin.',
+                          'PIN korumasi aktif. Guvenligi duzenli guncelleyin.',
                           'PIN protection is active. Update it regularly.',
                         )
                       : context.tr(
-                          'Uygulama kilidi iÃ§in Ã¶nce PIN tanÄ±mlayÄ±n.',
-                          'Set a PIN before enabling app lock.',
+                          'PIN opsiyoneldir; hizli acilis icin etkinlestirebilirsiniz.',
+                          'PIN is optional; enable it for faster unlock.',
                         ),
-                  onTap: _managePin,
+                  onTap: _ioBusy ? null : _managePin,
+                ),
+                const SizedBox(height: 8),
+                _switchTile(
+                  icon: Icons.fingerprint_rounded,
+                  title: context.tr(
+                    'Biyometrik Kilit Acma',
+                    'Biometric Unlock',
+                  ),
+                  subtitle: !_biometricAvailable
+                      ? context.tr(
+                          'Bu cihazda biyometrik dogrulama kullanilamiyor.',
+                          'Biometric authentication is unavailable on this device.',
+                        )
+                      : context.tr(
+                          settings.biometricUnlockEnabled
+                              ? 'Kilidi acarken biyometrik dogrulama kullanilir.'
+                              : 'Etkinlestirildiginde biyometrik dogrulama kullanabilirsiniz.',
+                          settings.biometricUnlockEnabled
+                              ? 'Biometric verification is used during unlock.'
+                              : 'Enable to use biometric verification during unlock.',
+                        ),
+                  value: settings.biometricUnlockEnabled && _biometricAvailable,
+                  onChanged: _ioBusy ? null : _toggleBiometricUnlock,
                 ),
               ],
             ),
@@ -1191,7 +1878,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 12),
             SettingsSectionCard(
-              title: context.tr('Veri Yonetimi', 'Data Management'),
+              title: context.tr('Yedekleme ve Aktarim', 'Backup & Transfer'),
               children: [
                 _actionTile(
                   icon: Icons.backup_rounded,
@@ -1200,10 +1887,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'Create Encrypted Backup',
                   ),
                   subtitle: settings.lastBackupAt == null
-                      ? context.tr('Henuz yedek yok', 'No backup yet')
+                      ? context.tr(
+                          'Henuz yedek yok - kimlik dogrulama gerekir',
+                          'No backup yet - identity verification required',
+                        )
                       : context.tr(
-                          'Son yedek: ${_stamp(settings.lastBackupAt!)}',
-                          'Last backup: ${_stamp(settings.lastBackupAt!)}',
+                          'Son yedek: ${_stamp(settings.lastBackupAt!)} - kimlik dogrulama gerekir',
+                          'Last backup: ${_stamp(settings.lastBackupAt!)} - identity verification required',
                         ),
                   onTap: _ioBusy ? null : _backupNow,
                   loading: _ioBusy,
@@ -1223,10 +1913,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   icon: Icons.file_upload_rounded,
                   title: context.tr('Sifreli Disa Aktar', 'Encrypted Export'),
                   subtitle: context.tr(
-                    'Verileri sifreli dosya olarak disa aktar',
-                    'Export records as encrypted file',
+                    'Sifreli dosya olusturur (kimlik dogrulama gerekir)',
+                    'Creates encrypted file (identity verification required)',
                   ),
                   onTap: _ioBusy ? null : _exportData,
+                  danger: true,
                 ),
                 const SizedBox(height: 8),
                 _actionTile(
@@ -1267,9 +1958,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 _actionTile(
                   icon: Icons.delete_forever_rounded,
-                  title: context.tr('TÃ¼m Verileri Sil', 'Delete All Data'),
+                  title: context.tr('Tum Verileri Sil', 'Delete All Data'),
                   subtitle: context.tr(
-                    'Geri alÄ±namaz bir iÅŸlemdir',
+                    'Geri alinamaz bir islemdir',
                     'This action is irreversible',
                   ),
                   danger: true,
@@ -1373,7 +2064,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String title,
     required String subtitle,
     required bool value,
-    required ValueChanged<bool> onChanged,
+    required ValueChanged<bool>? onChanged,
   }) {
     final pr = context.pr;
     final textTheme = Theme.of(context).textTheme;

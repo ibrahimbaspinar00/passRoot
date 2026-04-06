@@ -5,15 +5,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
 import '../services/pin_security_service.dart';
+import '../services/vault_key_service.dart';
 import '../utils/app_logger.dart';
 
 class AppSettingsStore extends ChangeNotifier {
   static const String _storageKey = 'passroot_app_settings_v1';
 
-  AppSettingsStore({PinSecurityService? pinSecurityService})
-    : _pinSecurityService = pinSecurityService ?? PinSecurityService();
+  AppSettingsStore({
+    PinSecurityService? pinSecurityService,
+    VaultKeyService? vaultKeyService,
+  }) : _pinSecurityService = pinSecurityService ?? PinSecurityService(),
+       _vaultKeyService = vaultKeyService ?? VaultKeyService();
 
   final PinSecurityService _pinSecurityService;
+  final VaultKeyService _vaultKeyService;
 
   AppSettings _settings = const AppSettings();
   bool _loaded = false;
@@ -23,6 +28,7 @@ class AppSettingsStore extends ChangeNotifier {
   bool get loaded => _loaded;
   bool get pinAvailable => _pinAvailable;
   PinSecurityService get pinSecurityService => _pinSecurityService;
+  VaultKeyService get vaultKeyService => _vaultKeyService;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -66,7 +72,12 @@ class AppSettingsStore extends ChangeNotifier {
   Future<void> refreshPinAvailability({bool notify = true}) async {
     bool hasPin = false;
     try {
-      hasPin = await _pinSecurityService.hasPin();
+      final hasPinHash = await _pinSecurityService.hasPin();
+      final hasPinWrap = await _vaultKeyService.hasPinWrap();
+      hasPin = hasPinHash && hasPinWrap;
+      if (hasPinHash && !hasPinWrap) {
+        await _pinSecurityService.clearPin();
+      }
     } on Exception catch (error, stackTrace) {
       AppLogger.debug(
         'AppSettingsStore',
@@ -126,13 +137,13 @@ class AppSettingsStore extends ChangeNotifier {
   }
 
   Future<void> setPinCode(String pin) async {
-    await _pinSecurityService.setPin(pin.trim());
+    await _vaultKeyService.enablePinProtection(pin.trim());
     _pinAvailable = true;
     await _update(_settings.copyWith(pinEnabled: true, pinCode: null));
   }
 
   Future<void> clearPinCode() async {
-    await _pinSecurityService.clearPin();
+    await _vaultKeyService.disablePinProtection();
     _pinAvailable = false;
     await _update(_settings.copyWith(pinEnabled: false, pinCode: null));
   }
@@ -148,6 +159,10 @@ class AppSettingsStore extends ChangeNotifier {
 
   Future<void> setAutoLockOption(AutoLockOption value) async {
     await _update(_settings.copyWith(autoLockOption: value));
+  }
+
+  Future<void> setBiometricUnlockEnabled(bool value) async {
+    await _update(_settings.copyWith(biometricUnlockEnabled: value));
   }
 
   Future<void> setLanguage(AppLanguage language) async {

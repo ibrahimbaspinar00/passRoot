@@ -38,7 +38,7 @@ void main() {
         );
 
         await expectLater(
-          store.addRecord(_sampleRecord()),
+          store.addRecord(_sampleRecord(id: 'sample-1', title: 'Test')),
           throwsA(isA<VaultStoreException>()),
         );
 
@@ -46,6 +46,28 @@ void main() {
         expect(store.storageIssue?.type, VaultStorageIssueType.writeFailure);
       },
     );
+
+    test('serializes concurrent writes to avoid lost updates', () async {
+      final fakeStorage = _FakeEncryptedStorageService(
+        saveDelay: const Duration(milliseconds: 40),
+      );
+      final store = VaultStore(storageService: fakeStorage);
+      addTearDown(store.dispose);
+
+      await _waitUntilLoaded(store);
+
+      final first = _sampleRecord(id: 'sample-1', title: 'Test');
+      final second = _sampleRecord(id: 'sample-2', title: 'Second');
+
+      await Future.wait<void>([
+        store.addRecord(first),
+        store.addRecord(second),
+      ]);
+
+      expect(store.totalCount, 2);
+      expect(store.records.any((record) => record.id == first.id), isTrue);
+      expect(store.records.any((record) => record.id == second.id), isTrue);
+    });
   });
 }
 
@@ -59,11 +81,11 @@ Future<void> _waitUntilLoaded(VaultStore store) async {
   fail('VaultStore did not finish loading in test timeout.');
 }
 
-VaultRecord _sampleRecord() {
+VaultRecord _sampleRecord({required String id, required String title}) {
   final now = DateTime.now();
   return VaultRecord(
-    id: 'sample-1',
-    title: 'Test',
+    id: id,
+    title: title,
     category: RecordCategory.website,
     platform: 'example.com',
     accountName: 'user',
@@ -79,9 +101,13 @@ VaultRecord _sampleRecord() {
 }
 
 class _FakeEncryptedStorageService extends EncryptedVaultStorageService {
-  _FakeEncryptedStorageService({this.loadError});
+  _FakeEncryptedStorageService({
+    this.loadError,
+    this.saveDelay = Duration.zero,
+  });
 
   final Exception? loadError;
+  final Duration saveDelay;
   Exception? saveError;
   String? savedPayload;
 
@@ -95,6 +121,9 @@ class _FakeEncryptedStorageService extends EncryptedVaultStorageService {
 
   @override
   Future<void> saveJsonPayload(String jsonPayload) async {
+    if (saveDelay > Duration.zero) {
+      await Future<void>.delayed(saveDelay);
+    }
     if (saveError != null) {
       throw saveError!;
     }

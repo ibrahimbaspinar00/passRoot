@@ -11,6 +11,8 @@ class AppLockOverlay extends StatelessWidget {
     this.errorText,
     this.title,
     this.subtitle,
+    this.onBiometricUnlock,
+    this.showBiometricUnlock = false,
   });
 
   final Future<void> Function() onUnlock;
@@ -18,6 +20,8 @@ class AppLockOverlay extends StatelessWidget {
   final String? errorText;
   final String? title;
   final String? subtitle;
+  final Future<void> Function()? onBiometricUnlock;
+  final bool showBiometricUnlock;
 
   @override
   Widget build(BuildContext context) {
@@ -96,6 +100,18 @@ class AppLockOverlay extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 18),
+                if (showBiometricUnlock && onBiometricUnlock != null) ...[
+                  OutlinedButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () async {
+                            await onBiometricUnlock!.call();
+                          },
+                    icon: const Icon(Icons.fingerprint_rounded),
+                    label: Text(context.tr('Biyometrik Dene', 'Try Biometric')),
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 FilledButton.icon(
                   onPressed: busy
                       ? null

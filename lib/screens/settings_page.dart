@@ -5,5 +5,8 @@ class SettingsPage extends SettingsScreen {
     super.key,
     required super.store,
     required super.settingsStore,
+    required super.accountStore,
+    required super.googleAuthStore,
+    super.focusGoogleAuthSignal,
   });
 }

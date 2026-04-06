@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
+import '../models/google_user_profile.dart';
 import '../models/vault_record.dart';
+import '../state/google_auth_store.dart';
 import '../state/vault_store.dart';
 import 'security_detail_screen.dart';
 import '../widgets/dashboard_stat_card.dart';
@@ -11,17 +13,21 @@ class DashboardScreen extends StatelessWidget {
   const DashboardScreen({
     super.key,
     required this.store,
+    required this.googleAuthStore,
+    required this.onOpenSignIn,
     required this.onOpenDetail,
   });
 
   final VaultStore store;
+  final GoogleAuthStore googleAuthStore;
+  final VoidCallback onOpenSignIn;
   final ValueChanged<SecurityDetailType> onOpenDetail;
 
   @override
   Widget build(BuildContext context) {
     final pr = context.pr;
     return AnimatedBuilder(
-      animation: store,
+      animation: Listenable.merge([store, googleAuthStore]),
       builder: (context, _) {
         final topCategories = store.topCategories();
 
@@ -29,6 +35,17 @@ class DashboardScreen extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
           children: [
             _DashboardHeader(totalCount: store.totalCount),
+            const SizedBox(height: 12),
+            if (!googleAuthStore.isSignedIn)
+              _DashboardSignedOutAuthBanner(
+                onOpenSignIn: onOpenSignIn,
+                syncStatus: googleAuthStore.cloudSyncStatus,
+              )
+            else if (googleAuthStore.user != null)
+              _DashboardSignedInAuthBadge(
+                user: googleAuthStore.user!,
+                syncStatus: googleAuthStore.cloudSyncStatus,
+              ),
             const SizedBox(height: 14),
             LayoutBuilder(
               builder: (context, constraints) {
@@ -163,6 +180,223 @@ class DashboardScreen extends StatelessWidget {
       },
     );
   }
+}
+
+class _DashboardSignedOutAuthBanner extends StatelessWidget {
+  const _DashboardSignedOutAuthBanner({
+    required this.onOpenSignIn,
+    required this.syncStatus,
+  });
+
+  final VoidCallback onOpenSignIn;
+  final CloudSyncStatus syncStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final pr = context.pr;
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: pr.panelBorder),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [pr.warningSoft.withValues(alpha: 0.68), pr.panelSurface],
+        ),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: scheme.error.withValues(alpha: 0.12),
+              border: Border.all(color: scheme.error.withValues(alpha: 0.22)),
+            ),
+            child: Text(
+              context.tr('Misafir Modu', 'Guest mode'),
+              style: textTheme.labelMedium?.copyWith(
+                color: scheme.error,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: scheme.error.withValues(alpha: 0.12),
+                ),
+                child: Icon(Icons.person_off_rounded, color: scheme.error),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  context.tr('Giris yapilmadi', 'Not signed in'),
+                  style: textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            context.tr(
+              'Google girisi yalnizca kimlik dogrulamasi icindir. Kasa verileri bu cihazda kalir ve buluta aktarilmaz.',
+              'Google sign-in is for identity verification only. Vault data stays on this device and is not synced to cloud.',
+            ),
+            style: textTheme.bodyMedium?.copyWith(
+              color: pr.textMuted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _dashboardSyncStatusLabel(context, syncStatus),
+            style: textTheme.bodySmall?.copyWith(
+              color: _dashboardSyncStatusColor(context, syncStatus),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onOpenSignIn,
+              icon: const Icon(Icons.arrow_forward_rounded),
+              label: Text(context.tr('Giriş Yap', 'Sign In')),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DashboardSignedInAuthBadge extends StatelessWidget {
+  const _DashboardSignedInAuthBadge({
+    required this.user,
+    required this.syncStatus,
+  });
+
+  final GoogleUserProfile user;
+  final CloudSyncStatus syncStatus;
+
+  @override
+  Widget build(BuildContext context) {
+    final pr = context.pr;
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: pr.accentSoft.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: scheme.primary.withValues(alpha: 0.24)),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 18,
+            backgroundColor: scheme.primary.withValues(alpha: 0.16),
+            foregroundColor: scheme.primary,
+            backgroundImage: user.hasPhoto
+                ? NetworkImage(user.photoUrl!)
+                : null,
+            child: user.hasPhoto
+                ? null
+                : Text(
+                    user.initials,
+                    style: textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  context.tr(
+                    'Hos geldin, ${user.displayName}',
+                    'Welcome, ${user.displayName}',
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  context.tr(
+                    'Kimlik bagli, kasa yerel',
+                    'Identity connected, vault local',
+                  ),
+                  style: textTheme.bodySmall?.copyWith(
+                    color: pr.textMuted,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _dashboardSyncStatusLabel(context, syncStatus),
+                  style: textTheme.bodySmall?.copyWith(
+                    color: _dashboardSyncStatusColor(context, syncStatus),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Icon(Icons.verified_rounded, color: scheme.primary),
+        ],
+      ),
+    );
+  }
+}
+
+String _dashboardSyncStatusLabel(BuildContext context, CloudSyncStatus status) {
+  return switch (status) {
+    CloudSyncStatus.disconnected => context.tr(
+        'Bulut senk.: bagli degil',
+        'Cloud sync: disconnected',
+      ),
+    CloudSyncStatus.unavailable => context.tr(
+        'Bulut senk.: aktif degil',
+        'Cloud sync: inactive',
+      ),
+    CloudSyncStatus.active => context.tr(
+        'Bulut senk.: aktif',
+        'Cloud sync: active',
+      ),
+    CloudSyncStatus.error => context.tr(
+        'Bulut senk.: hata',
+        'Cloud sync: error',
+      ),
+  };
+}
+
+Color _dashboardSyncStatusColor(BuildContext context, CloudSyncStatus status) {
+  final scheme = Theme.of(context).colorScheme;
+  return switch (status) {
+    CloudSyncStatus.disconnected => scheme.outline,
+    CloudSyncStatus.unavailable => scheme.error,
+    CloudSyncStatus.active => scheme.tertiary,
+    CloudSyncStatus.error => scheme.error,
+  };
 }
 
 class _DashboardHeader extends StatelessWidget {

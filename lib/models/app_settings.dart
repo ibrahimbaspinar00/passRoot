@@ -217,6 +217,7 @@ class AppSettings {
     this.lockOnAppResume = false,
     this.pinEnabled = false,
     this.pinCode,
+    this.biometricUnlockEnabled = false,
     this.autoLockOption = AutoLockOption.minute1,
     this.language = AppLanguage.turkish,
     this.passwordGenerator = const PasswordGeneratorSettings(),
@@ -233,6 +234,7 @@ class AppSettings {
   final bool pinEnabled;
   // Legacy value kept only for migration from plaintext PIN storage.
   final String? pinCode;
+  final bool biometricUnlockEnabled;
   final AutoLockOption autoLockOption;
   final AppLanguage language;
   final PasswordGeneratorSettings passwordGenerator;
@@ -256,6 +258,7 @@ class AppSettings {
     bool? lockOnAppResume,
     bool? pinEnabled,
     Object? pinCode = _unset,
+    bool? biometricUnlockEnabled,
     AutoLockOption? autoLockOption,
     AppLanguage? language,
     PasswordGeneratorSettings? passwordGenerator,
@@ -271,6 +274,8 @@ class AppSettings {
       lockOnAppResume: lockOnAppResume ?? this.lockOnAppResume,
       pinEnabled: pinEnabled ?? this.pinEnabled,
       pinCode: identical(pinCode, _unset) ? this.pinCode : pinCode as String?,
+      biometricUnlockEnabled:
+          biometricUnlockEnabled ?? this.biometricUnlockEnabled,
       autoLockOption: autoLockOption ?? this.autoLockOption,
       language: language ?? this.language,
       passwordGenerator: passwordGenerator ?? this.passwordGenerator,
@@ -289,6 +294,7 @@ class AppSettings {
       'lockOnAppResume': lockOnAppResume,
       'pinEnabled': pinEnabled,
       'pinCode': pinCode,
+      'biometricUnlockEnabled': biometricUnlockEnabled,
       'autoLockOption': autoLockOption.name,
       'language': language.name,
       'passwordGenerator': passwordGenerator.toJson(),
@@ -319,6 +325,7 @@ class AppSettings {
           json['pinEnabled'] == true ||
           ((json['pinCode'] as String?)?.trim().isNotEmpty ?? false),
       pinCode: (json['pinCode'] as String?)?.trim(),
+      biometricUnlockEnabled: json['biometricUnlockEnabled'] == true,
       autoLockOption: _autoLockFromName(
         (json['autoLockOption'] as String?) ?? '',
       ),

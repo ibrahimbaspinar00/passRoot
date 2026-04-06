@@ -43,6 +43,10 @@ dependencies:
   package_info_plus: ^8.3.1
   path: ^1.9.1
   cryptography: ^2.9.0
+  local_auth: ^2.3.0
+  google_sign_in: ^7.2.0
+  firebase_core: ^4.6.0
+  firebase_auth: ^6.3.0
 
 dev_dependencies:
   flutter_test:

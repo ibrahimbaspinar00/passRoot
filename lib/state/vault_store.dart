@@ -1,6 +1,7 @@
 import 'dart:collection';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:flutter/material.dart';
 
@@ -41,6 +42,7 @@ class VaultStore extends ChangeNotifier {
   bool _sortedCacheDirty = true;
   bool _categoryCacheDirty = true;
   bool _securitySummaryDirty = true;
+  Future<void> _writeQueue = Future<void>.value();
 
   bool get isLoading => _isLoading;
   VaultStorageIssue? get storageIssue => _storageIssue;
@@ -61,7 +63,7 @@ class VaultStore extends ChangeNotifier {
       _logStorageError('clear', error, stackTrace);
       _setStorageIssue(_issueFromStorageException(error));
       throw VaultStoreException(
-        'Bozuk kasa verisi temizlenemedi. LÃ¼tfen tekrar deneyin.',
+        'Bozuk kasa verisi temizlenemedi. Lütfen tekrar deneyin.',
       );
     } on Exception catch (error, stackTrace) {
       _logStorageError('clear', error, stackTrace);
@@ -69,13 +71,13 @@ class VaultStore extends ChangeNotifier {
         VaultStorageIssue(
           title: 'Kasa temizlenemedi',
           message:
-              'Kasa verisi temizlenemedi. Cihaz depolama iznini ve boÅŸ alanÄ± kontrol edin.',
+              'Kasa verisi temizlenemedi. Cihaz depolama iznini ve boş alanı kontrol edin.',
           code: 'vault_clear_failed',
           type: VaultStorageIssueType.writeFailure,
         ),
       );
       throw VaultStoreException(
-        'Kasa verisi temizlenemedi. LÃ¼tfen depolama alanÄ±nÄ± kontrol edin.',
+        'Kasa verisi temizlenemedi. Lütfen depolama alanını kontrol edin.',
       );
     }
   }
@@ -96,7 +98,7 @@ class VaultStore extends ChangeNotifier {
 
       final decoded = jsonDecode(raw);
       if (decoded is! List) {
-        throw const FormatException('Kasa verisi beklenen listede deÄŸil.');
+        throw const FormatException('Kasa verisi beklenen listede değil.');
       }
 
       final loaded = <VaultRecord>[];
@@ -121,7 +123,7 @@ class VaultStore extends ChangeNotifier {
         VaultStorageIssue(
           title: 'Kasa verisi bozuk',
           message:
-              'Kasa verisi okunamadÄ±. Åifreli iÃ§erik bozulmuÅŸ olabilir. LÃ¼tfen yedekten geri yÃ¼klemeyi deneyin.',
+              'Kasa verisi okunamadı. Şifreli içerik bozulmuş olabilir. Lütfen yedekten geri yüklemeyi deneyin.',
           code: 'vault_payload_corrupted',
           type: VaultStorageIssueType.corruptedPayload,
         ),
@@ -131,9 +133,9 @@ class VaultStore extends ChangeNotifier {
       _logStorageError('load', error, stackTrace);
       _setStorageIssue(
         VaultStorageIssue(
-          title: 'Kasa verisi okunamadÄ±',
+          title: 'Kasa verisi okunamadı',
           message:
-              'Kasa verisi ÅŸu anda okunamÄ±yor. Tekrar deneyin veya yedekten geri yÃ¼kleyin.',
+              'Kasa verisi şu anda okunamıyor. Tekrar deneyin veya yedekten geri yükleyin.',
           code: 'vault_read_failed',
           type: VaultStorageIssueType.readFailure,
         ),
@@ -150,13 +152,31 @@ class VaultStore extends ChangeNotifier {
     required String operation,
   }) async {
     final payload = nextRecords.map((record) => record.toJson()).toList();
+    late final String encodedPayload;
     try {
-      await _storageService.saveJsonPayload(jsonEncode(payload));
+      encodedPayload = await Isolate.run<String>(() => jsonEncode(payload));
+    } on Exception catch (error, stackTrace) {
+      _logStorageError('$operation/serialize', error, stackTrace);
+      _setStorageIssue(
+        VaultStorageIssue(
+          title: 'Kasa kaydedilemedi',
+          message:
+              'Degisiklikler islenirken veri paketleme hatasi olustu. Lutfen tekrar deneyin.',
+          code: 'vault_serialize_failed',
+          type: VaultStorageIssueType.writeFailure,
+        ),
+      );
+      throw VaultStoreException(
+        'Degisiklikler kaydedilemedi. Lutfen tekrar deneyin.',
+      );
+    }
+    try {
+      await _storageService.saveJsonPayload(encodedPayload);
     } on EncryptedVaultStorageException catch (error, stackTrace) {
       _logStorageError(operation, error, stackTrace);
       _setStorageIssue(_issueFromStorageException(error));
       throw VaultStoreException(
-        'Veri cihaza kaydedilemedi. LÃ¼tfen tekrar deneyin.',
+        'Veri cihaza kaydedilemedi. Lütfen tekrar deneyin.',
       );
     } on Exception catch (error, stackTrace) {
       _logStorageError(operation, error, stackTrace);
@@ -164,13 +184,13 @@ class VaultStore extends ChangeNotifier {
         VaultStorageIssue(
           title: 'Kasa kaydedilemedi',
           message:
-              'DeÄŸiÅŸiklikler cihaza yazÄ±lamadÄ±. Depolama alanÄ±nÄ± kontrol edip tekrar deneyin.',
+              'Değişiklikler cihaza yazılamadı. Depolama alanını kontrol edip tekrar deneyin.',
           code: 'vault_write_failed',
           type: VaultStorageIssueType.writeFailure,
         ),
       );
       throw VaultStoreException(
-        'DeÄŸiÅŸiklikler cihaza kaydedilemedi. LÃ¼tfen tekrar deneyin.',
+        'Değişiklikler cihaza kaydedilemedi. Lütfen tekrar deneyin.',
       );
     }
 
@@ -180,6 +200,23 @@ class VaultStore extends ChangeNotifier {
     _markCachesDirty(clearDerivedCache: true);
     _clearStorageIssue(notify: false);
     notifyListeners();
+  }
+
+  Future<void> _enqueueMutation({
+    required String operation,
+    required List<VaultRecord> Function(List<VaultRecord> current) transform,
+  }) {
+    final queued = _writeQueue.then((_) async {
+      final current = List<VaultRecord>.from(_records);
+      final next = transform(current);
+      if (identical(next, current)) {
+        return;
+      }
+      await _commitRecords(next, operation: operation);
+    });
+
+    _writeQueue = queued.catchError((_) {});
+    return queued;
   }
 
   void _markCachesDirty({bool clearDerivedCache = false}) {
@@ -224,18 +261,19 @@ class VaultStore extends ChangeNotifier {
       case EncryptedVaultStorageErrorCode.decryptionFailed:
       case EncryptedVaultStorageErrorCode.invalidPayload:
         return VaultStorageIssue(
-          title: 'Kasa verisi Ã§Ã¶zÃ¼mlenemedi',
+          title: 'Kasa verisi çözümlenemedi',
           message:
-              'Kasa verisi aÃ§Ä±lamadÄ±. Åifreleme verisi bozulmuÅŸ olabilir. Yedekten geri yÃ¼klemeyi deneyin.',
+              'Kasa verisi açılamadı. Şifreleme verisi bozulmuş olabilir. Yedekten geri yüklemeyi deneyin.',
           code: 'vault_decrypt_failed',
           type: VaultStorageIssueType.corruptedPayload,
         );
       case EncryptedVaultStorageErrorCode.readFailed:
       case EncryptedVaultStorageErrorCode.secureStorageUnavailable:
+      case EncryptedVaultStorageErrorCode.legacyMigrationRequired:
         return VaultStorageIssue(
-          title: 'Kasa verisine eriÅŸilemiyor',
+          title: 'Kasa verisine erişilemiyor',
           message:
-              'Depolama alanÄ±na eriÅŸilemedi. UygulamayÄ± yeniden baÅŸlatÄ±p tekrar deneyin.',
+              'Depolama alanına erişilemedi. Uygulamayı yeniden başlatıp tekrar deneyin.',
           code: 'vault_read_failed',
           type: VaultStorageIssueType.readFailure,
         );
@@ -243,7 +281,7 @@ class VaultStore extends ChangeNotifier {
         return VaultStorageIssue(
           title: 'Kasa kaydedilemedi',
           message:
-              'DeÄŸiÅŸiklikler cihaza kaydedilemedi. Depolama alanÄ±nÄ± kontrol edip tekrar deneyin.',
+              'Değişiklikler cihaza kaydedilemedi. Depolama alanını kontrol edip tekrar deneyin.',
           code: 'vault_write_failed',
           type: VaultStorageIssueType.writeFailure,
         );
@@ -278,50 +316,66 @@ class VaultStore extends ChangeNotifier {
   }
 
   Future<void> replaceAllRecords(List<VaultRecord> records) {
-    return _commitRecords(
-      List<VaultRecord>.from(records),
+    return _enqueueMutation(
       operation: 'replace_all_records',
+      transform: (_) => List<VaultRecord>.from(records),
     );
   }
 
   Future<void> clearAllRecords() {
-    return _commitRecords(
-      const <VaultRecord>[],
+    return _enqueueMutation(
       operation: 'clear_all_records',
+      transform: (_) => const <VaultRecord>[],
     );
   }
 
   Future<void> addRecord(VaultRecord record) {
-    final next = List<VaultRecord>.from(_records)..add(record);
-    return _commitRecords(next, operation: 'add_record');
+    return _enqueueMutation(
+      operation: 'add_record',
+      transform: (current) => List<VaultRecord>.from(current)..add(record),
+    );
   }
 
   Future<void> updateRecord(VaultRecord updated) {
-    final index = _records.indexWhere((record) => record.id == updated.id);
-    if (index == -1) {
-      return Future<void>.value();
-    }
-    final next = List<VaultRecord>.from(_records)..[index] = updated;
-    return _commitRecords(next, operation: 'update_record');
+    return _enqueueMutation(
+      operation: 'update_record',
+      transform: (current) {
+        final index = current.indexWhere((record) => record.id == updated.id);
+        if (index == -1) {
+          return current;
+        }
+        final next = List<VaultRecord>.from(current);
+        next[index] = updated;
+        return next;
+      },
+    );
   }
 
   Future<void> deleteRecord(String id) {
-    final next = List<VaultRecord>.from(_records)
-      ..removeWhere((record) => record.id == id);
-    return _commitRecords(next, operation: 'delete_record');
+    return _enqueueMutation(
+      operation: 'delete_record',
+      transform: (current) =>
+          List<VaultRecord>.from(current)
+            ..removeWhere((record) => record.id == id),
+    );
   }
 
   Future<void> toggleFavorite(String id) {
-    final index = _records.indexWhere((record) => record.id == id);
-    if (index == -1) {
-      return Future<void>.value();
-    }
-    final next = List<VaultRecord>.from(_records);
-    next[index] = next[index].copyWith(
-      isFavorite: !_records[index].isFavorite,
-      updatedAt: DateTime.now(),
+    return _enqueueMutation(
+      operation: 'toggle_favorite',
+      transform: (current) {
+        final index = current.indexWhere((record) => record.id == id);
+        if (index == -1) {
+          return current;
+        }
+        final next = List<VaultRecord>.from(current);
+        next[index] = next[index].copyWith(
+          isFavorite: !current[index].isFavorite,
+          updatedAt: DateTime.now(),
+        );
+        return next;
+      },
     );
-    return _commitRecords(next, operation: 'toggle_favorite');
   }
 
   void _rebuildCategoryCache() {

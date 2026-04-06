@@ -70,7 +70,7 @@ class StorageRecoveryScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 14),
                     Text(
-                      context.tr('Kasa Verisi OkunamadÄ±', 'Vault Data Error'),
+                      context.tr('Kasa Verisi Okunamadı', 'Vault Data Error'),
                       style: Theme.of(context).textTheme.headlineSmall
                           ?.copyWith(fontWeight: FontWeight.w700),
                     ),
@@ -110,7 +110,7 @@ class StorageRecoveryScreen extends StatelessWidget {
                         icon: const Icon(Icons.restore_rounded),
                         label: Text(
                           context.tr(
-                            'Ayarlar > Yedekten Geri YÃ¼kle',
+                            'Ayarlar > Yedekten Geri Yükle',
                             'Settings > Restore Backup',
                           ),
                         ),
@@ -137,7 +137,7 @@ class StorageRecoveryScreen extends StatelessWidget {
                     const SizedBox(height: 10),
                     Text(
                       context.tr(
-                        'Not: Bu ekran veri kaybÄ±nÄ± gizlemek iÃ§in deÄŸil, veri sorunu tespit edildiÄŸinde sizi gÃ¼venli kurtarma adÄ±mlarÄ±na yÃ¶nlendirmek iÃ§in gÃ¶sterilir.',
+                        'Not: Bu ekran veri kaybını gizlemek için değil, veri sorunu tespit edildiğinde sizi güvenli kurtarma adımlarına yönlendirmek için gösterilir.',
                         'Note: This screen is shown to prevent silent data loss and guide safe recovery steps.',
                       ),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(

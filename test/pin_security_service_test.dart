@@ -1,5 +1,5 @@
-import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:passroot/security/secure_storage_service.dart';
 import 'package:passroot/services/pin_security_service.dart';
 
@@ -13,20 +13,28 @@ void main() {
       service = PinSecurityService(secureStorageService: fakeStorage);
     });
 
-    test('sets and verifies valid pin', () async {
-      await service.setPin('1234');
+    test('sets and verifies valid numeric pin', () async {
+      await service.setPin('82739452');
 
       expect(await service.hasPin(), isTrue);
-      expect(await service.verifyPin('1234'), isTrue);
-      expect(await service.verifyPin('4321'), isFalse);
+      expect(await service.verifyPin('82739452'), isTrue);
+      expect(await service.verifyPin('11111111'), isFalse);
+    });
+
+    test('supports alphanumeric pin policy', () async {
+      await service.setPin('A82c7394');
+
+      expect(await service.hasPin(), isTrue);
+      expect(await service.verifyPin('A82c7394'), isTrue);
+      expect(await service.verifyPin('A82c7395'), isFalse);
     });
 
     test('applies lock after repeated failures', () async {
-      await service.setPin('1234');
+      await service.setPin('82739452');
 
-      final first = await service.verifyPinDetailed('9999');
-      final second = await service.verifyPinDetailed('9999');
-      final third = await service.verifyPinDetailed('9999');
+      final first = await service.verifyPinDetailed('11111111');
+      final second = await service.verifyPinDetailed('11111111');
+      final third = await service.verifyPinDetailed('11111111');
 
       expect(first.locked, isFalse);
       expect(second.locked, isFalse);
@@ -34,17 +42,55 @@ void main() {
       expect(third.retryAfter, isNot(Duration.zero));
     });
 
-    test('successful verify resets protection counters', () async {
-      await service.setPin('1234');
-      await service.verifyPinDetailed('9999');
-      await service.verifyPinDetailed('9999');
+    test('critical threshold requires master fallback', () async {
+      await service.setPin('82739452');
 
-      final success = await service.verifyPinDetailed('1234');
-      final nextFailure = await service.verifyPinDetailed('9999');
+      PinVerificationResult result = const PinVerificationResult.failure();
+      for (var i = 0; i < 8; i++) {
+        result = await service.verifyPinDetailed('11111111');
+        await fakeStorage.delete('passroot_pin_lock_until_v1');
+      }
+
+      expect(result.failedAttempts, 8);
+      expect(result.requiresMasterPassword, isTrue);
+    });
+
+    test('master reauth gate blocks pin until cleared', () async {
+      await service.setPin('82739452');
+      for (var i = 0; i < 8; i++) {
+        await service.verifyPinDetailed('11111111');
+        await fakeStorage.delete('passroot_pin_lock_until_v1');
+      }
+
+      final blocked = await service.verifyPinDetailed('82739452');
+      expect(blocked.success, isFalse);
+      expect(blocked.requiresMasterPassword, isTrue);
+
+      await service.clearMasterReauthRequirement();
+      final unlocked = await service.verifyPinDetailed('82739452');
+      expect(unlocked.success, isTrue);
+    });
+
+    test('successful verify resets protection counters', () async {
+      await service.setPin('82739452');
+      await service.verifyPinDetailed('11111111');
+      await service.verifyPinDetailed('11111111');
+
+      final success = await service.verifyPinDetailed('82739452');
+      final nextFailure = await service.verifyPinDetailed('11111111');
 
       expect(success.success, isTrue);
       expect(nextFailure.locked, isFalse);
       expect(nextFailure.failedAttempts, 1);
+    });
+
+    test('migrates only policy-compliant legacy pin values', () async {
+      await service.migrateLegacyPin('82739452');
+      expect(await service.hasPin(), isTrue);
+
+      await service.clearPin();
+      await service.migrateLegacyPin('827394');
+      expect(await service.hasPin(), isFalse);
     });
   });
 }

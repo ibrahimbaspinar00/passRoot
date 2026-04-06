@@ -1,26 +1,53 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:passroot/security/secure_storage_service.dart';
 import 'package:passroot/services/encrypted_vault_storage_service.dart';
+import 'package:passroot/services/pin_security_service.dart';
+import 'package:passroot/services/vault_key_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('EncryptedVaultStorageService', () {
     late _InMemorySecureStorage fakeStorage;
+    late VaultKeyService keyService;
     late EncryptedVaultStorageService service;
+    late Directory tempDir;
 
-    setUp(() {
+    Future<EncryptedVaultStorageService> buildService() async {
+      return EncryptedVaultStorageService(
+        vaultKeyService: keyService,
+        storageDirectoryProvider: () async => tempDir,
+      );
+    }
+
+    setUp(() async {
       SharedPreferences.setMockInitialValues(<String, Object>{});
+      tempDir = await Directory.systemTemp.createTemp('passroot-vault-test-');
       fakeStorage = _InMemorySecureStorage();
-      service = EncryptedVaultStorageService(secureStorage: fakeStorage);
+      keyService = VaultKeyService(
+        secureStorage: fakeStorage,
+        pinSecurityService: PinSecurityService(secureStorageService: fakeStorage),
+      );
+      await keyService.setupVault(masterPassword: 'MasterPassword!234');
+      service = await buildService();
+    });
+
+    tearDown(() async {
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
     });
 
     test('writes encrypted payload and reads back decrypted json', () async {
       const plain = '[{"id":"1","title":"Demo"}]';
       await service.saveJsonPayload(plain);
 
-      final prefs = await SharedPreferences.getInstance();
-      final encrypted = prefs.getString('passroot_vault_encrypted_payload_v1');
+      final storageFile = File('${tempDir.path}/passroot_vault_secure_payload_v2');
+      final encrypted = await storageFile.readAsString();
       expect(encrypted, isNotNull);
       expect(encrypted, isNot(plain));
 
@@ -34,18 +61,21 @@ void main() {
         'passroot_vault_records_v2': plain,
       });
 
-      final migrated = await service.loadJsonPayload();
-      expect(migrated, plain);
+      final loadedLegacy = await service.loadJsonPayload();
+      expect(loadedLegacy, plain);
 
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getString('passroot_vault_records_v2'), isNull);
-      expect(prefs.getString('passroot_vault_encrypted_payload_v1'), isNotNull);
+      final loadedAfterMigration = await service.loadJsonPayload();
+      expect(loadedAfterMigration, plain);
+
+      final storageFile = File('${tempDir.path}/passroot_vault_secure_payload_v2');
+      expect(await storageFile.exists(), isTrue);
     });
 
-    test('throws explicit error when encrypted payload is corrupted', () async {
-      SharedPreferences.setMockInitialValues(<String, Object>{
-        'passroot_vault_encrypted_payload_v1': '{broken-json',
-      });
+    test('throws explicit error when encrypted payload is corrupted file', () async {
+      final storageFile = File('${tempDir.path}/passroot_vault_secure_payload_v2');
+      await storageFile.writeAsString('{broken-json', flush: true);
 
       await expectLater(
         service.loadJsonPayload(),
@@ -53,7 +83,7 @@ void main() {
           isA<EncryptedVaultStorageException>().having(
             (error) => error.code,
             'code',
-            EncryptedVaultStorageErrorCode.decryptionFailed,
+            EncryptedVaultStorageErrorCode.invalidPayload,
           ),
         ),
       );

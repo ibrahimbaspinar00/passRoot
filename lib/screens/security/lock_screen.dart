@@ -10,6 +10,8 @@ class LockScreen extends StatelessWidget {
     required this.busy,
     required this.errorText,
     required this.onUnlockPressed,
+    this.onBiometricUnlock,
+    this.showBiometricUnlock = false,
   });
 
   final String title;
@@ -17,6 +19,8 @@ class LockScreen extends StatelessWidget {
   final bool busy;
   final String? errorText;
   final Future<void> Function() onUnlockPressed;
+  final Future<void> Function()? onBiometricUnlock;
+  final bool showBiometricUnlock;
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +33,8 @@ class LockScreen extends StatelessWidget {
           busy: busy,
           errorText: errorText,
           onUnlock: onUnlockPressed,
+          onBiometricUnlock: onBiometricUnlock,
+          showBiometricUnlock: showBiometricUnlock,
         ),
       ),
     );

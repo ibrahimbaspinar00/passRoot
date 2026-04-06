@@ -295,10 +295,12 @@ class _VaultRecordCardState extends State<VaultRecordCard> {
                           ),
                         ),
                         icon: Icon(
-                          Icons.delete_outline_rounded,
+                          Icons.delete_forever_rounded,
                           size: compact ? 16 : 18,
                         ),
-                        label: Text(context.tr('Sil', 'Delete')),
+                        label: Text(
+                          context.tr('Sil ve Dogrula', 'Delete & Verify'),
+                        ),
                       ),
                     ),
                   ],

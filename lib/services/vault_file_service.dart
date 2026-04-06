@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -51,17 +52,17 @@ class VaultFileService {
     if (path != null && path.trim().isNotEmpty) {
       final file = File(path);
       await file.parent.create(recursive: true);
-      return file.writeAsString(content, flush: true);
+      return file.writeAsString(content, flush: true, encoding: utf8);
     }
 
     final docs = await getApplicationDocumentsDirectory();
     final now = DateTime.now().toIso8601String().replaceAll(':', '-');
     final file = File('${docs.path}/passroot_export_$now.pvault');
-    return file.writeAsString(content, flush: true);
+    return file.writeAsString(content, flush: true, encoding: utf8);
   }
 
   static Future<String> readFile(String path) async {
-    return File(path).readAsString();
+    return File(path).readAsString(encoding: utf8);
   }
 
   static Future<bool> exists(String path) async {
@@ -116,7 +117,7 @@ class VaultFileService {
         ? 'json'
         : extension.trim().toLowerCase();
     final file = File('${directory.path}/backup_$now.$normalizedExtension');
-    return file.writeAsString(content, flush: true);
+    return file.writeAsString(content, flush: true, encoding: utf8);
   }
 
   static Future<List<File>> listBackups() async {

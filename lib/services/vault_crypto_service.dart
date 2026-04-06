@@ -5,6 +5,7 @@ import 'package:cryptography/cryptography.dart';
 
 class VaultCryptoService {
   static const _algorithmId = 'aes256gcm-pbkdf2-sha256-v1';
+  static const _rawKeyAlgorithmId = 'aes256gcm-key-v1';
   static const _iterations = 210000;
 
   final AesGcm _cipher = AesGcm.with256bits();
@@ -46,6 +47,28 @@ class VaultCryptoService {
     return jsonEncode(envelope);
   }
 
+  Future<String> encryptStringWithRawKey({
+    required String plaintext,
+    required List<int> rawKey,
+  }) async {
+    if (rawKey.length != 32) {
+      throw const VaultCryptoException('Sifreleme anahtari uzunlugu gecersiz.');
+    }
+    final nonce = _randomBytes(12);
+    final encrypted = await _cipher.encrypt(
+      utf8.encode(plaintext),
+      secretKey: SecretKey(List<int>.from(rawKey, growable: false)),
+      nonce: nonce,
+    );
+    return jsonEncode(<String, dynamic>{
+      'v': 2,
+      'alg': _rawKeyAlgorithmId,
+      'nonce': base64Encode(nonce),
+      'ciphertext': base64Encode(encrypted.cipherText),
+      'mac': base64Encode(encrypted.mac.bytes),
+    });
+  }
+
   Future<String> decryptString({
     required String encryptedPayload,
     required String passphrase,
@@ -80,6 +103,50 @@ class VaultCryptoService {
     final cipherText = _decodeB64(envelope['ciphertext'], 'ciphertext');
     final macBytes = _decodeB64(envelope['mac'], 'mac');
     final key = await _deriveKey(passphrase: normalized, salt: salt);
+
+    try {
+      final clearBytes = await _cipher.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes)),
+        secretKey: key,
+      );
+      return utf8.decode(clearBytes);
+    } on SecretBoxAuthenticationError {
+      throw const VaultCryptoException(
+        'Sifreleme anahtari hatali veya veri bozulmus.',
+      );
+    }
+  }
+
+  Future<String> decryptStringWithRawKey({
+    required String encryptedPayload,
+    required List<int> rawKey,
+  }) async {
+    if (rawKey.length != 32) {
+      throw const VaultCryptoException('Sifreleme anahtari uzunlugu gecersiz.');
+    }
+
+    late final Map<String, dynamic> envelope;
+    try {
+      final decoded = jsonDecode(encryptedPayload);
+      if (decoded is! Map<String, dynamic>) {
+        throw const VaultCryptoException('Sifreli yedek formati gecersiz.');
+      }
+      envelope = decoded;
+    } on FormatException {
+      throw const VaultCryptoException('Sifreli yedek cozumlenemedi.');
+    }
+
+    final algorithm = (envelope['alg'] as String?)?.trim();
+    if (algorithm != _rawKeyAlgorithmId) {
+      throw const VaultCryptoException(
+        'Bu yedek dosyasi desteklenmeyen bir sifreleme algoritmasi kullaniyor.',
+      );
+    }
+
+    final nonce = _decodeB64(envelope['nonce'], 'nonce');
+    final cipherText = _decodeB64(envelope['ciphertext'], 'ciphertext');
+    final macBytes = _decodeB64(envelope['mac'], 'mac');
+    final key = SecretKey(List<int>.from(rawKey, growable: false));
 
     try {
       final clearBytes = await _cipher.decrypt(
