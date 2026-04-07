@@ -4,15 +4,18 @@ import 'package:flutter/material.dart';
 
 import '../l10n/lang_x.dart';
 import '../models/app_settings.dart';
+import '../screens/security/biometric_opt_in_screen.dart';
 import '../screens/security/create_vault_credentials_screen.dart';
 import '../screens/security/lock_screen.dart';
-import '../screens/security/master_unlock_screen.dart';
 import '../screens/security/pin_login_screen.dart';
+import '../screens/security/pin_recovery_screen.dart';
 import '../screens/splash_screen.dart';
 import '../security/security_service.dart';
 import '../security/session_manager.dart';
 import '../services/biometric_auth_service.dart';
 import '../services/vault_key_service.dart';
+import '../services/vault_recovery_service.dart';
+import '../widgets/pin_dialogs.dart';
 import '../state/account_store.dart';
 import '../state/app_settings_store.dart';
 import '../state/google_auth_store.dart';
@@ -37,29 +40,42 @@ class AppStartGate extends StatefulWidget {
 
 class _AppStartGateState extends State<AppStartGate>
     with WidgetsBindingObserver {
-  late final SecurityService _securityService;
+  late SecurityService _securityService;
   late final SessionManager _sessionManager;
-  late final VaultKeyService _vaultKeyService;
+  late VaultKeyService _vaultKeyService;
   late final BiometricAuthService _biometricAuthService;
+  late VaultRecoveryService _vaultRecoveryService;
 
   bool _pinAvailable = false;
   bool _didGoBackground = false;
   DateTime? _backgroundAt;
   bool _pinRouteOpen = false;
-  bool _masterRouteOpen = false;
   int _launchFlowId = 0;
   bool _needsVaultSetup = false;
   bool _biometricAvailable = false;
   bool _biometricBusy = false;
+  bool _showBiometricPrompt = false;
+  bool _biometricPromptBusy = false;
+  String? _biometricPromptError;
+  bool _recoveryBusy = false;
+  String? _recoveryError;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _vaultKeyService = widget.settingsStore.vaultKeyService;
-    _securityService = SecurityService(vaultKeyService: _vaultKeyService);
-    _sessionManager = SessionManager();
     _biometricAuthService = BiometricAuthService();
+    _securityService = SecurityService(
+      vaultKeyService: _vaultKeyService,
+      biometricAuthService: _biometricAuthService,
+    );
+    _vaultRecoveryService = VaultRecoveryService(
+      vaultKeyService: _vaultKeyService,
+      settingsStore: widget.settingsStore,
+      biometricAuthService: _biometricAuthService,
+    );
+    _sessionManager = SessionManager();
     widget.settingsStore.addListener(_onSettingsChanged);
     unawaited(_prepareLaunchFlow());
   }
@@ -73,6 +89,15 @@ class _AppStartGateState extends State<AppStartGate>
     oldWidget.settingsStore.removeListener(_onSettingsChanged);
     widget.settingsStore.addListener(_onSettingsChanged);
     _vaultKeyService = widget.settingsStore.vaultKeyService;
+    _securityService = SecurityService(
+      vaultKeyService: _vaultKeyService,
+      biometricAuthService: _biometricAuthService,
+    );
+    _vaultRecoveryService = VaultRecoveryService(
+      vaultKeyService: _vaultKeyService,
+      settingsStore: widget.settingsStore,
+      biometricAuthService: _biometricAuthService,
+    );
     unawaited(_prepareLaunchFlow());
   }
 
@@ -130,7 +155,7 @@ class _AppStartGateState extends State<AppStartGate>
 
     await _securityService.prepare(widget.settingsStore);
     _pinAvailable = widget.settingsStore.pinAvailable;
-    final hasMasterWrap = await _vaultKeyService.hasMasterWrap();
+    final hasVaultKeyMaterial = await _vaultKeyService.hasVaultKeyMaterial();
     final biometricAvailable = await _biometricAuthService.canUseBiometrics();
 
     if (!mounted || flowId != _launchFlowId) {
@@ -138,15 +163,17 @@ class _AppStartGateState extends State<AppStartGate>
     }
 
     setState(() {
-      _needsVaultSetup = !hasMasterWrap;
+      _needsVaultSetup = !hasVaultKeyMaterial || !_pinAvailable;
       _biometricAvailable = biometricAvailable;
+      _showBiometricPrompt = false;
+      _biometricPromptError = null;
     });
 
     if (_needsVaultSetup) {
       _sessionManager.requirePinSetup(
         errorText: context.tr(
-          'Ilk acilis: kasa anahtarini guvenli bicimde olusturmaniz gerekir.',
-          'First launch: you must securely create vault credentials.',
+          'Ilk acilis guvenlik adimi: PIN olusturun.',
+          'First security step: create your PIN.',
         ),
       );
       return;
@@ -171,11 +198,7 @@ class _AppStartGateState extends State<AppStartGate>
 
   Future<void> _onUnlockPressed() async {
     if (!_sessionManager.isLocked) return;
-    if (_pinAvailable) {
-      await _openPinLogin();
-      return;
-    }
-    await _openMasterLogin();
+    await _openPinLogin();
   }
 
   Future<void> _onBiometricUnlockPressed() async {
@@ -186,8 +209,8 @@ class _AppStartGateState extends State<AppStartGate>
         !widget.settingsStore.settings.biometricUnlockEnabled) {
       _sessionManager.endAuthentication(
         errorText: context.tr(
-          'Biyometrik dogrulama kullanilamiyor. PIN veya master password ile devam edin.',
-          'Biometric authentication is unavailable. Continue with PIN or master password.',
+          'Biyometrik dogrulama kullanilamiyor. PIN ile devam edin.',
+          'Biometric authentication is unavailable. Continue with PIN.',
         ),
       );
       await _onUnlockPressed();
@@ -215,23 +238,21 @@ class _AppStartGateState extends State<AppStartGate>
       }
       return;
     }
-    if (_pinAvailable) {
-      await _openPinLogin(
-        allowBack: false,
-        description: context.tr(
-          'Biyometrik dogrulama tamamlandi. Devam etmek icin PIN girin.',
-          'Biometric verification passed. Enter PIN to continue.',
+
+    try {
+      await _vaultKeyService.unlockWithBiometricSession();
+      if (!mounted) return;
+      _sessionManager.unlock();
+    } on VaultKeyException catch (error) {
+      _sessionManager.endAuthentication(errorText: error.message);
+    } on Exception {
+      _sessionManager.endAuthentication(
+        errorText: context.tr(
+          'Biyometrik dogrulama tamamlandi ancak kasa acilamadi. PIN ile tekrar deneyin.',
+          'Biometric verification passed but vault unlock failed. Retry with PIN.',
         ),
       );
-      return;
     }
-    await _openMasterLogin(
-      allowBack: false,
-      description: context.tr(
-        'Biyometrik dogrulama tamamlandi. Master password girin.',
-        'Biometric verification passed. Enter master password.',
-      ),
-    );
   }
 
   String _biometricFailureMessage(BiometricAuthFailureReason? reason) {
@@ -240,31 +261,31 @@ class _AppStartGateState extends State<AppStartGate>
       case BiometricAuthFailureReason.unavailable:
       case BiometricAuthFailureReason.noCredentials:
         return context.tr(
-          'Biyometrik dogrulama kullanilamiyor. PIN veya master password ile devam edin.',
-          'Biometric authentication is unavailable. Continue with PIN or master password.',
+          'Biyometrik dogrulama kullanilamiyor. PIN ile devam edin.',
+          'Biometric authentication is unavailable. Continue with PIN.',
         );
       case BiometricAuthFailureReason.temporaryLockout:
       case BiometricAuthFailureReason.permanentLockout:
         return context.tr(
-          'Biyometrik dogrulama gecici olarak kilitlendi. PIN veya master password ile devam edin.',
-          'Biometric authentication is temporarily locked. Continue with PIN or master password.',
+          'Biyometrik dogrulama gecici olarak kilitlendi. PIN ile devam edin.',
+          'Biometric authentication is temporarily locked. Continue with PIN.',
         );
       case BiometricAuthFailureReason.timedOut:
         return context.tr(
-          'Biyometrik zaman asimina ugradi. PIN veya master password ile devam edin.',
-          'Biometric authentication timed out. Continue with PIN or master password.',
+          'Biyometrik zaman asimina ugradi. PIN ile devam edin.',
+          'Biometric authentication timed out. Continue with PIN.',
         );
       case BiometricAuthFailureReason.fallbackRequested:
         return context.tr(
-          'Biyometrik yerine alternatif dogrulama secildi. PIN veya master password ile devam edin.',
-          'Alternative authentication was requested instead of biometrics. Continue with PIN or master password.',
+          'Biyometrik yerine alternatif dogrulama secildi. PIN ile devam edin.',
+          'Alternative authentication was requested instead of biometrics. Continue with PIN.',
         );
       case BiometricAuthFailureReason.noActivity:
       case BiometricAuthFailureReason.invalidActivity:
       case BiometricAuthFailureReason.unknown:
         return context.tr(
-          'Biyometrik dogrulama baslatilamadi. PIN veya master password ile devam edin.',
-          'Biometric authentication could not start. Continue with PIN or master password.',
+          'Biyometrik dogrulama baslatilamadi. PIN ile devam edin.',
+          'Biometric authentication could not start. Continue with PIN.',
         );
       case BiometricAuthFailureReason.canceledByUser:
       case BiometricAuthFailureReason.systemCanceled:
@@ -292,7 +313,6 @@ class _AppStartGateState extends State<AppStartGate>
       return false;
     }
 
-    var masterFallbackRequested = false;
     _pinRouteOpen = true;
     final verified = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
@@ -304,16 +324,11 @@ class _AppStartGateState extends State<AppStartGate>
                 'Uygulamaya giris yapmak icin PIN kodunuzu girin.',
                 'Enter your PIN to access the app.',
               ),
-          onForgotPin: () async {
-            masterFallbackRequested = true;
-            if (Navigator.of(context).canPop()) {
-              Navigator.of(context).pop(false);
-            }
-          },
           onVerifyPin: (pin) => _securityService.verifyPinDetailed(
             settingsStore: widget.settingsStore,
             pin: pin,
           ),
+          onForgotPin: _openPinRecoveryFlow,
         ),
       ),
     );
@@ -322,21 +337,12 @@ class _AppStartGateState extends State<AppStartGate>
     if (!mounted) return false;
 
     if (verified == true) {
-      await widget.settingsStore.pinSecurityService
-          .clearMasterReauthRequirement();
       _sessionManager.unlock();
       return true;
     }
-
-    if (masterFallbackRequested) {
+    if (verified == null) {
       _sessionManager.endAuthentication();
-      return _openMasterLogin(
-        allowBack: allowBack,
-        description: context.tr(
-          'PIN yerine master password ile devam edin.',
-          'Continue with master password instead of PIN.',
-        ),
-      );
+      return false;
     }
 
     _securityService.lockVault();
@@ -354,61 +360,215 @@ class _AppStartGateState extends State<AppStartGate>
     return false;
   }
 
-  Future<bool> _openMasterLogin({
-    bool allowBack = true,
-    String? description,
-  }) async {
-    if (!_sessionManager.isLocked || _masterRouteOpen) {
-      return false;
+  Future<void> _openPinRecoveryFlow() async {
+    if (!_sessionManager.isLocked || _recoveryBusy) {
+      return;
     }
-    if (!_sessionManager.beginAuthentication()) {
-      return false;
+    if (!mounted) {
+      return;
     }
-    _masterRouteOpen = true;
-    final verified = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
-        builder: (_) => MasterUnlockScreen(
-          allowBack: allowBack,
-          description:
-              description ??
-              context.tr(
-                'Kasa anahtarini acmak icin master password girin.',
-                'Enter master password to unlock vault key.',
-              ),
-          onVerifyMasterPassword: _securityService.verifyMasterPasswordDetailed,
+
+    final recoveryAvailable =
+        _biometricAvailable &&
+        widget.settingsStore.settings.biometricUnlockEnabled;
+    _recoveryError = null;
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => StatefulBuilder(
+          builder: (context, setState) {
+            Future<void> biometricResetPin() async {
+              if (_recoveryBusy) {
+                return;
+              }
+              final resetReason = context.tr(
+                'PIN sifirlama islemi icin biyometrik dogrulama yapin.',
+                'Authenticate biometrically to reset PIN.',
+              );
+              final pinResetFailedMessage = context.tr(
+                'PIN sifirlama tamamlanamadi. Lutfen tekrar deneyin.',
+                'PIN reset could not be completed. Please try again.',
+              );
+              final newPin = await PinDialogs.askNewPin(
+                context,
+                barrierDismissible: false,
+                title: context.tr('Yeni PIN Belirle', 'Set New PIN'),
+                description: context.tr(
+                  'Biyometrik dogrulama sonrasi yeni PIN tanimlanacak.',
+                  'A new PIN will be set after biometric verification.',
+                ),
+                actionText: context.tr('PIN Kaydet', 'Save PIN'),
+              );
+              if (newPin == null) {
+                return;
+              }
+              setState(() {
+                _recoveryBusy = true;
+                _recoveryError = null;
+              });
+              try {
+                await _vaultRecoveryService.resetPinWithBiometric(
+                  reason: resetReason,
+                  newPin: newPin,
+                );
+                if (!context.mounted) return;
+                _sessionManager.unlock();
+                Navigator.of(context).pop();
+              } on VaultRecoveryException catch (error) {
+                setState(() {
+                  _recoveryError = error.message;
+                });
+              } on Exception {
+                setState(() {
+                  _recoveryError = pinResetFailedMessage;
+                });
+              } finally {
+                if (context.mounted) {
+                  setState(() {
+                    _recoveryBusy = false;
+                  });
+                }
+              }
+            }
+
+            Future<void> resetVault() async {
+              if (_recoveryBusy) {
+                return;
+              }
+              final resetFailedMessage = context.tr(
+                'Kasa sifirlama tamamlanamadi. Lutfen tekrar deneyin.',
+                'Vault reset could not be completed. Please try again.',
+              );
+              final confirmed = await _confirmVaultReset();
+              if (!confirmed) {
+                return;
+              }
+
+              setState(() {
+                _recoveryBusy = true;
+                _recoveryError = null;
+              });
+              try {
+                await _vaultRecoveryService.resetVaultCompletely();
+                if (!context.mounted) return;
+                Navigator.of(context).pop();
+                await _prepareLaunchFlow();
+              } on VaultRecoveryException catch (error) {
+                setState(() {
+                  _recoveryError = error.message;
+                });
+              } on Exception {
+                setState(() {
+                  _recoveryError = resetFailedMessage;
+                });
+              } finally {
+                if (context.mounted) {
+                  setState(() {
+                    _recoveryBusy = false;
+                  });
+                }
+              }
+            }
+
+            return PinRecoveryScreen(
+              biometricRecoveryAvailable: recoveryAvailable,
+              busy: _recoveryBusy,
+              errorText: _recoveryError,
+              onBiometricResetPin: biometricResetPin,
+              onResetVault: resetVault,
+            );
+          },
         ),
       ),
     );
-    _masterRouteOpen = false;
-    if (!mounted) return false;
+  }
 
-    if (verified == true) {
-      _sessionManager.unlock();
-      return true;
-    }
-    _securityService.lockVault();
-    _sessionManager.endAuthentication(
-      errorText: context.tr(
-        'Master password dogrulanamadi.',
-        'Master password verification failed.',
-      ),
+  Future<bool> _confirmVaultReset() async {
+    final typed = TextEditingController();
+    String? localError;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(context.tr('Kasayi Sifirla', 'Reset Vault')),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    context.tr(
+                      'Bu islem tum yerel kasayi siler, mevcut verilere erisimi kaybettirir ve geri alinamaz.',
+                      'This action deletes the entire local vault, removes access to current data, and cannot be undone.',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    context.tr(
+                      'Onaylamak icin RESET yazin.',
+                      'Type RESET to confirm.',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: typed,
+                    decoration: InputDecoration(
+                      labelText: context.tr('Onay Kodu', 'Confirmation Code'),
+                      errorText: localError,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text(context.tr('Iptal', 'Cancel')),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (typed.text.trim().toUpperCase() != 'RESET') {
+                      setDialogState(() {
+                        localError = context.tr(
+                          'Lutfen RESET yazarak onaylayin.',
+                          'Please type RESET to confirm.',
+                        );
+                      });
+                      return;
+                    }
+                    Navigator.pop(context, true);
+                  },
+                  child: Text(
+                    context.tr('Kalici Olarak Sil', 'Delete Permanently'),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
-    return false;
+    typed.dispose();
+    return confirmed == true;
   }
 
   Future<void> _createInitialCredentials(VaultCredentialSetupData data) async {
     if (!_sessionManager.beginPinSetup()) return;
 
     try {
-      await _vaultKeyService.setupVault(
-        masterPassword: data.masterPassword,
-        optionalPin: data.pin,
-      );
+      await _vaultKeyService.setupVault(pin: data.pin);
       await widget.settingsStore.refreshPinAvailability(notify: false);
       if (!mounted) return;
       _pinAvailable = widget.settingsStore.pinAvailable;
+      final shouldSuggestBiometric =
+          _biometricAvailable &&
+          !widget.settingsStore.settings.biometricUnlockEnabled;
       setState(() {
         _needsVaultSetup = false;
+        _showBiometricPrompt = shouldSuggestBiometric;
+        _biometricPromptBusy = false;
+        _biometricPromptError = null;
       });
       _sessionManager.unlock();
     } on VaultKeyException catch (error) {
@@ -429,6 +589,50 @@ class _AppStartGateState extends State<AppStartGate>
     }
   }
 
+  Future<void> _enableBiometricFromPrompt() async {
+    if (_biometricPromptBusy) {
+      return;
+    }
+    setState(() {
+      _biometricPromptBusy = true;
+      _biometricPromptError = null;
+    });
+    final ok = await _biometricAuthService.authenticate(
+      reason: context.tr(
+        'PassRoot icin biyometrik girisi etkinlestirmeyi onaylayin.',
+        'Confirm enabling biometric unlock for PassRoot.',
+      ),
+    );
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _biometricPromptBusy = false;
+        _biometricPromptError = context.tr(
+          'Biyometrik dogrulama tamamlanamadi. PIN ile devam edebilirsiniz.',
+          'Biometric verification was not completed. You can continue with PIN.',
+        );
+      });
+      return;
+    }
+    await widget.settingsStore.setBiometricUnlockEnabled(true);
+    if (!mounted) return;
+    setState(() {
+      _showBiometricPrompt = false;
+      _biometricPromptBusy = false;
+      _biometricPromptError = null;
+    });
+  }
+
+  Future<void> _skipBiometricPrompt() async {
+    if (_biometricPromptBusy) {
+      return;
+    }
+    setState(() {
+      _showBiometricPrompt = false;
+      _biometricPromptError = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -446,6 +650,15 @@ class _AppStartGateState extends State<AppStartGate>
           );
         }
 
+        if (_showBiometricPrompt) {
+          return BiometricOptInScreen(
+            busy: _biometricPromptBusy,
+            errorText: _biometricPromptError,
+            onEnable: _enableBiometricFromPrompt,
+            onSkip: _skipBiometricPrompt,
+          );
+        }
+
         if (_sessionManager.isLocked) {
           final settings = widget.settingsStore.settings;
           final showBiometric =
@@ -453,8 +666,8 @@ class _AppStartGateState extends State<AppStartGate>
           return LockScreen(
             title: context.tr('PassRoot Kilidi', 'PassRoot Lock'),
             subtitle: context.tr(
-              'Devam etmek icin kimliginizi dogrulayin.',
-              'Verify your identity to continue.',
+              'Devam etmek icin PIN veya biyometri ile kimliginizi dogrulayin.',
+              'Verify your identity with PIN or biometrics to continue.',
             ),
             busy: _sessionManager.isAuthenticating || _biometricBusy,
             errorText: _sessionManager.errorText,

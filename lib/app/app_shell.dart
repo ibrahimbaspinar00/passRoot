@@ -164,14 +164,14 @@ class _AppShellState extends State<AppShell> {
               const SizedBox(height: 10),
               Text(
                 context.tr(
-                  '- Vault sifresi master password ile korunur; unutursaniz kasa acilamaz.',
-                  '- Vault is protected by master password; if forgotten, vault cannot be unlocked.',
+                  '- Uygulama cihazinizda guclu sifreleme anahtari olusturur ve guvenli depolamada saklar.',
+                  '- The app creates a strong encryption key on your device and stores it in secure storage.',
                 ),
               ),
               Text(
                 context.tr(
-                  '- PIN/biyometrik sadece hizli acilis katmanidir; master password mutlaka guclu olmali.',
-                  '- PIN/biometric is only a quick-unlock layer; master password must be strong.',
+                  '- Kilit ekranina erisim PIN (4/6 hane) veya biyometri ile saglanir.',
+                  '- Lock-screen access is protected by PIN (4/6 digits) or biometrics.',
                 ),
               ),
               Text(

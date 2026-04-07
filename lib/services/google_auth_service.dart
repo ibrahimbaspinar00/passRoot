@@ -6,6 +6,16 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 import '../utils/app_logger.dart';
 
+enum GoogleAuthFailureType {
+  networkError,
+  canceled,
+  signInFailed,
+  invalidConfiguration,
+  providerDisabled,
+  apiException,
+  unknown,
+}
+
 class GoogleAuthService {
   GoogleAuthService({GoogleSignIn? googleSignIn, FirebaseAuth? firebaseAuth})
     : _googleSignIn = googleSignIn ?? GoogleSignIn.instance,
@@ -49,7 +59,8 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'google_initialize'},
       );
       throw const GoogleAuthException(
-        'Google giris servisi baslatilirken zaman asimi olustu.',
+        type: GoogleAuthFailureType.apiException,
+        message: 'Google giris servisi baslatilirken zaman asimi olustu.',
       );
     } on GoogleSignInException catch (error, stackTrace) {
       AppLogger.warning(
@@ -62,7 +73,7 @@ class GoogleAuthService {
           'google_error_code': error.code.name,
         },
       );
-      throw GoogleAuthException(_mapSignInError(error));
+      throw _mapSignInError(error);
     }
   }
 
@@ -81,7 +92,8 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'firebase_initialize'},
       );
       throw const GoogleAuthException(
-        'Firebase baslatilirken zaman asimi olustu.',
+        type: GoogleAuthFailureType.networkError,
+        message: 'Firebase baslatilirken zaman asimi olustu.',
       );
     } on FirebaseException catch (error, stackTrace) {
       AppLogger.warning(
@@ -92,9 +104,10 @@ class GoogleAuthService {
         context: <String, Object?>{
           'operation': 'firebase_initialize',
           'firebase_error_code': error.code,
+          'firebase_error_message': error.message,
         },
       );
-      throw GoogleAuthException(_mapFirebaseInitError(error));
+      throw _mapFirebaseInitError(error);
     } on Object catch (error, stackTrace) {
       AppLogger.error(
         'GoogleAuthService',
@@ -104,7 +117,9 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'firebase_initialize'},
       );
       throw const GoogleAuthException(
-        'Firebase baslatilamadi. Google giris su an kullanilamiyor.',
+        type: GoogleAuthFailureType.invalidConfiguration,
+        message:
+            'Firebase baslatilamadi. Android icin android/app/google-services.json dosyasini ve Firebase uygulama ayarlarini kontrol edin.',
       );
     }
   }
@@ -139,7 +154,8 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'restore_session'},
       );
       throw const GoogleAuthException(
-        'Google oturum geri yukleme islemi zaman asimina ugradi.',
+        type: GoogleAuthFailureType.networkError,
+        message: 'Google oturum geri yukleme islemi zaman asimina ugradi.',
       );
     } on GoogleSignInException catch (error, stackTrace) {
       AppLogger.warning(
@@ -152,7 +168,7 @@ class GoogleAuthService {
           'google_error_code': error.code.name,
         },
       );
-      throw GoogleAuthException(_mapSignInError(error));
+      throw _mapSignInError(error);
     } on FirebaseAuthException catch (error, stackTrace) {
       AppLogger.warning(
         'GoogleAuthService',
@@ -164,7 +180,7 @@ class GoogleAuthService {
           'firebase_auth_code': error.code,
         },
       );
-      throw GoogleAuthException(_mapFirebaseAuthError(error));
+      throw _mapFirebaseAuthError(error);
     } on GoogleAuthException {
       rethrow;
     } on Object catch (error, stackTrace) {
@@ -176,7 +192,9 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'restore_session'},
       );
       throw const GoogleAuthException(
-        'Google oturum geri yukleme sirasinda beklenmeyen bir hata olustu.',
+        type: GoogleAuthFailureType.unknown,
+        message:
+            'Google oturum geri yukleme sirasinda beklenmeyen bir hata olustu.',
       );
     }
   }
@@ -185,7 +203,9 @@ class GoogleAuthService {
     await initialize();
     if (!_googleSignIn.supportsAuthenticate()) {
       throw const GoogleAuthException(
-        'Bu platformda standart Google giris akisi desteklenmiyor.',
+        type: GoogleAuthFailureType.invalidConfiguration,
+        message:
+            'Bu platformda Google giris akisi desteklenmiyor. Platform konfigürasyonunu kontrol edin.',
       );
     }
 
@@ -194,7 +214,9 @@ class GoogleAuthService {
       final user = await _signInFirebaseWithGoogleAccount(account);
       if (user == null) {
         throw const GoogleAuthException(
-          'Google hesabi dogrulandi fakat Firebase oturumu baslatilamadi.',
+          type: GoogleAuthFailureType.signInFailed,
+          message:
+              'Google hesabi dogrulandi fakat Firebase oturumu baslatilamadi.',
         );
       }
       return user;
@@ -209,7 +231,7 @@ class GoogleAuthService {
           'google_error_code': error.code.name,
         },
       );
-      throw GoogleAuthException(_mapSignInError(error));
+      throw _mapSignInError(error);
     } on FirebaseAuthException catch (error, stackTrace) {
       AppLogger.warning(
         'GoogleAuthService',
@@ -221,7 +243,7 @@ class GoogleAuthService {
           'firebase_auth_code': error.code,
         },
       );
-      throw GoogleAuthException(_mapFirebaseAuthError(error));
+      throw _mapFirebaseAuthError(error);
     } on GoogleAuthException {
       rethrow;
     } on Object catch (error, stackTrace) {
@@ -233,7 +255,8 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'sign_in'},
       );
       throw const GoogleAuthException(
-        'Google ile giris sirasinda beklenmeyen bir hata olustu.',
+        type: GoogleAuthFailureType.unknown,
+        message: 'Google ile giris sirasinda beklenmeyen bir hata olustu.',
       );
     }
   }
@@ -254,7 +277,7 @@ class GoogleAuthService {
           'google_error_code': error.code.name,
         },
       );
-      throw GoogleAuthException(_mapSignOutError(error));
+      throw _mapSignOutError(error);
     } on FirebaseAuthException catch (error, stackTrace) {
       AppLogger.warning(
         'GoogleAuthService',
@@ -266,7 +289,7 @@ class GoogleAuthService {
           'firebase_auth_code': error.code,
         },
       );
-      throw GoogleAuthException(_mapFirebaseAuthError(error));
+      throw _mapFirebaseAuthError(error);
     } on Object catch (error, stackTrace) {
       AppLogger.error(
         'GoogleAuthService',
@@ -276,7 +299,8 @@ class GoogleAuthService {
         context: const <String, Object?>{'operation': 'sign_out'},
       );
       throw const GoogleAuthException(
-        'Cikis islemi tamamlanamadi. Tekrar deneyin.',
+        type: GoogleAuthFailureType.unknown,
+        message: 'Cikis islemi tamamlanamadi. Tekrar deneyin.',
       );
     }
   }
@@ -285,9 +309,11 @@ class GoogleAuthService {
     GoogleSignInAccount account,
   ) async {
     final idToken = account.authentication.idToken?.trim();
-    if (idToken == null || idToken.isEmpty) {
+    if ((idToken ?? '').isEmpty) {
       throw const GoogleAuthException(
-        'Google kimlik dogrulama belirteci alinamadi. Lutfen tekrar deneyin.',
+        message:
+            'Google kimlik belirteci alinamadi. Android package name, SHA-1/SHA-256 ve webClientId ayarlarini kontrol edin.',
+        type: GoogleAuthFailureType.invalidConfiguration,
       );
     }
 
@@ -296,65 +322,146 @@ class GoogleAuthService {
     return userCredential.user;
   }
 
-  String _mapFirebaseInitError(FirebaseException error) {
-    return switch (error.code) {
-      'network-error' => 'Firebase baslatilirken ag baglantisi sorunu olustu.',
-      'unknown' => 'Firebase baslatilamadi. Kurulum ayarlarinizi kontrol edin.',
-      _ => 'Firebase baslatilamadi. google-services ayarlarinizi kontrol edin.',
-    };
+  GoogleAuthException _mapFirebaseInitError(FirebaseException error) {
+    final message = (error.message ?? '').toLowerCase();
+    if (error.code == 'network-error') {
+      return const GoogleAuthException(
+        type: GoogleAuthFailureType.networkError,
+        message: 'Firebase baslatilirken ag baglantisi sorunu olustu.',
+      );
+    }
+    if (message.contains('failed to load firebaseoptions') ||
+        message.contains('default firebaseapp failed') ||
+        message.contains('google_app_id') ||
+        message.contains('google-services')) {
+      return GoogleAuthException(
+        type: GoogleAuthFailureType.invalidConfiguration,
+        code: error.code,
+        message:
+            'Firebase/Google konfigurasyonu gecersiz. Android icin android/app/google-services.json, applicationId (app.passroot.vault), SHA-1/SHA-256 ve Firebase Authentication > Google provider ayarlarini kontrol edin.',
+      );
+    }
+    return GoogleAuthException(
+      type: GoogleAuthFailureType.apiException,
+      code: error.code,
+      message:
+          'Firebase baslatilamadi. Konfigürasyonu kontrol edin (google-services.json, package name, SHA fingerprint, provider).',
+    );
   }
 
-  String _mapFirebaseAuthError(FirebaseAuthException error) {
+  GoogleAuthException _mapFirebaseAuthError(FirebaseAuthException error) {
     switch (error.code) {
       case 'account-exists-with-different-credential':
-        return 'Bu e-posta farkli bir giris yontemi ile kayitli.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.signInFailed,
+          message: 'Bu e-posta farkli bir giris yontemi ile kayitli.',
+        );
       case 'invalid-credential':
-        return 'Google kimlik bilgisi gecersiz veya suresi dolmus.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.invalidConfiguration,
+          message:
+              'Google kimlik bilgisi gecersiz. SHA fingerprint veya client kimligi ayarlarini kontrol edin.',
+        );
       case 'operation-not-allowed':
-        return 'Firebase Console uzerinde Google giris aktif degil.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.providerDisabled,
+          message: 'Firebase Console uzerinde Google provider aktif degil.',
+        );
       case 'network-request-failed':
-        return 'Ag baglantisi hatasi. Internet baglantinizi kontrol edin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.networkError,
+          message: 'Ag baglantisi hatasi. Internet baglantinizi kontrol edin.',
+        );
       case 'too-many-requests':
-        return 'Cok fazla deneme yapildi. Lutfen biraz sonra tekrar deneyin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          message:
+              'Cok fazla deneme yapildi. Lutfen biraz sonra tekrar deneyin.',
+        );
       case 'user-disabled':
-        return 'Bu hesap devre disi birakilmis.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.signInFailed,
+          message: 'Bu hesap devre disi birakilmis.',
+        );
       default:
-        return 'Kimlik dogrulama sirasinda Firebase hatasi olustu (${error.code}).';
+        return GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          code: error.code,
+          message: 'Firebase kimlik dogrulama hatasi olustu (${error.code}).',
+        );
     }
   }
 
-  String _mapSignInError(GoogleSignInException error) {
+  GoogleAuthException _mapSignInError(GoogleSignInException error) {
     switch (error.code) {
       case GoogleSignInExceptionCode.canceled:
-        return 'Google girisi iptal edildi.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.canceled,
+          message: 'Google girisi kullanici tarafindan iptal edildi.',
+        );
       case GoogleSignInExceptionCode.interrupted:
-        return 'Google giris islemi kesintiye ugradi. Lutfen tekrar deneyin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          message:
+              'Google giris islemi kesintiye ugradi. Lutfen tekrar deneyin.',
+        );
       case GoogleSignInExceptionCode.clientConfigurationError:
       case GoogleSignInExceptionCode.providerConfigurationError:
-        return 'Google giris ayarlari eksik. Android/iOS/Web konfigurasyonunu kontrol edin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.invalidConfiguration,
+          message:
+              'Google konfigurasyonu gecersiz. google-services.json, applicationId, SHA-1/SHA-256 ve webClientId ayarlarini kontrol edin.',
+        );
       case GoogleSignInExceptionCode.uiUnavailable:
-        return 'Google giris penceresi acilamadi. Uygulamayi yeniden deneyin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          message:
+              'Google giris penceresi acilamadi. Uygulamayi yeniden deneyin.',
+        );
       case GoogleSignInExceptionCode.userMismatch:
-        return 'Secilen Google hesabi aktif oturumla eslesmedi. Tekrar deneyin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.signInFailed,
+          message:
+              'Secilen Google hesabi aktif oturumla eslesmedi. Tekrar deneyin.',
+        );
       default:
-        return 'Google ile giris sirasinda beklenmeyen bir hata olustu (${error.code.name}).';
+        return GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          code: error.code.name,
+          message:
+              'Google ile giris sirasinda API hatasi olustu (${error.code.name}).',
+        );
     }
   }
 
-  String _mapSignOutError(GoogleSignInException error) {
+  GoogleAuthException _mapSignOutError(GoogleSignInException error) {
     switch (error.code) {
       case GoogleSignInExceptionCode.uiUnavailable:
-        return 'Google cikis islemi su an tamamlanamadi. Tekrar deneyin.';
+        return const GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          message: 'Google cikis islemi su an tamamlanamadi. Tekrar deneyin.',
+        );
       default:
-        return 'Cikis islemi tamamlanamadi (${error.code.name}). Tekrar deneyin.';
+        return GoogleAuthException(
+          type: GoogleAuthFailureType.apiException,
+          code: error.code.name,
+          message:
+              'Cikis islemi tamamlanamadi (${error.code.name}). Tekrar deneyin.',
+        );
     }
   }
 }
 
 class GoogleAuthException implements Exception {
-  const GoogleAuthException(this.message);
+  const GoogleAuthException({
+    required this.type,
+    required this.message,
+    this.code,
+  });
 
+  final GoogleAuthFailureType type;
   final String message;
+  final String? code;
 
   @override
   String toString() => message;

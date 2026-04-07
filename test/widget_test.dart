@@ -174,7 +174,10 @@ class _FakeGoogleAuthService extends GoogleAuthService {
 
   @override
   Future<User> signIn() async {
-    throw const GoogleAuthException('Fake service signIn is not implemented.');
+    throw const GoogleAuthException(
+      type: GoogleAuthFailureType.apiException,
+      message: 'Fake service signIn is not implemented.',
+    );
   }
 
   @override
@@ -200,7 +203,8 @@ class _InMemorySecureStorage extends SecureStorageService {
   }
 }
 
-class _InMemoryEncryptedVaultStorageService extends EncryptedVaultStorageService {
+class _InMemoryEncryptedVaultStorageService
+    extends EncryptedVaultStorageService {
   String? _payload;
 
   @override

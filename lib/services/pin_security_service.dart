@@ -40,40 +40,35 @@ class PinSecurityService {
   static const String _lockUntilEpochMsKey = 'passroot_pin_lock_until_v1';
   static const String _pinModeKey = 'passroot_pin_mode_v2';
   static const String _pinPolicyVersionKey = 'passroot_pin_policy_version_v2';
-  static const String _masterReauthRequiredKey =
-      'passroot_pin_master_reauth_required_v2';
 
   final SecureStorageService _secureStorage;
 
   static const int _defaultPbkdf2Iterations = 260000;
   static const int _minimumPbkdf2Iterations = 120000;
   static const int _legacyPolicyVersion = 1;
-  static const int _currentPolicyVersion = 2;
-  static const int _masterFallbackThreshold = 8;
+  static const int _currentPolicyVersion = 3;
 
   static const int legacyMinNumericPinLength = 6;
   static const int legacyMaxNumericPinLength = 12;
-  static const int minNumericPinLength = 8;
-  static const int maxNumericPinLength = 12;
+  static const int minNumericPinLength = 4;
+  static const int maxNumericPinLength = 6;
   static const int minAlphanumericLength = 8;
   static const int maxAlphanumericLength = 24;
+  static const int maxPinLength = maxNumericPinLength;
 
-  static final RegExp _numericPinPattern = RegExp(
-    '^\\d{$minNumericPinLength,$maxNumericPinLength}\$',
-  );
+  static final RegExp _currentNumericPinPattern = RegExp(r'^(\d{4}|\d{6})$');
   static final RegExp _legacyNumericPinPattern = RegExp(
     '^\\d{$legacyMinNumericPinLength,$legacyMaxNumericPinLength}\$',
   );
-  static final RegExp _alphanumericAllowedPattern = RegExp(
+  static final RegExp _legacyAlphanumericAllowedPattern = RegExp(
     '^[A-Za-z\\d]{$minAlphanumericLength,$maxAlphanumericLength}\$',
   );
   static final RegExp _potentialUnlockInputPattern = RegExp(
-    '^[A-Za-z\\d]{$legacyMinNumericPinLength,$maxAlphanumericLength}\$',
+    '^[A-Za-z\\d]{4,$maxAlphanumericLength}\$',
   );
   static final RegExp _letterPattern = RegExp(r'[A-Za-z]');
   static final RegExp _digitPattern = RegExp(r'\d');
   static final RegExp _repeatedDoublePattern = RegExp(r'^(\d\d)\1+$');
-  static final RegExp _repeatedSinglePattern = RegExp(r'^(.)\1+$');
 
   bool isValidPin(String pin) => isStrongPin(pin);
 
@@ -95,40 +90,18 @@ class PinSecurityService {
 
   static bool isStrongPinCandidate(String pin) {
     final normalized = pin.trim();
-    if (normalized.isEmpty) {
-      return false;
-    }
-    final mode = inferMode(normalized);
-    if (mode == PinSecretMode.numeric) {
-      return _isStrongNumericPin(normalized);
-    }
-    return _isStrongAlphanumericPin(normalized);
-  }
-
-  static String enrollmentPolicyLabelTr() {
-    return 'Sayisal PIN icin 8-12 hane; alfanumerik kod icin en az bir harf + bir rakam ile 8-24 karakter kullanin.';
-  }
-
-  static String enrollmentPolicyLabelEn() {
-    return 'Use 8-12 digits for numeric PIN, or 8-24 alphanumeric characters with at least one letter and one digit.';
-  }
-
-  static bool _isStrongNumericPin(String normalized) {
-    if (!_numericPinPattern.hasMatch(normalized)) {
+    if (!_currentNumericPinPattern.hasMatch(normalized)) {
       return false;
     }
     return !_isWeakNumericPinPattern(normalized);
   }
 
-  static bool _isStrongAlphanumericPin(String normalized) {
-    if (!_alphanumericAllowedPattern.hasMatch(normalized)) {
-      return false;
-    }
-    if (!_letterPattern.hasMatch(normalized) ||
-        !_digitPattern.hasMatch(normalized)) {
-      return false;
-    }
-    return !_isWeakAlphanumericPattern(normalized);
+  static String enrollmentPolicyLabelTr() {
+    return 'PIN sadece 4 veya 6 hane sayisal olmalidir.';
+  }
+
+  static String enrollmentPolicyLabelEn() {
+    return 'PIN must be numeric and exactly 4 or 6 digits.';
   }
 
   Future<bool> hasPin() async {
@@ -141,10 +114,9 @@ class PinSecurityService {
     final normalized = pin.trim();
     if (!isStrongPinCandidate(normalized)) {
       throw const FormatException(
-        'PIN policy mismatch. Use 8-12 digits or 8-24 alphanumeric characters with at least one letter and one digit.',
+        'PIN policy mismatch. PIN must be numeric and exactly 4 or 6 digits.',
       );
     }
-    final mode = inferMode(normalized);
 
     final salt = _generateSalt(16);
     final hash = await _hashPin(
@@ -158,7 +130,10 @@ class PinSecurityService {
       key: _pinIterationsKey,
       value: '$_defaultPbkdf2Iterations',
     );
-    await _secureStorage.write(key: _pinModeKey, value: mode.storageValue);
+    await _secureStorage.write(
+      key: _pinModeKey,
+      value: PinSecretMode.numeric.storageValue,
+    );
     await _secureStorage.write(
       key: _pinPolicyVersionKey,
       value: '$_currentPolicyVersion',
@@ -184,16 +159,6 @@ class PinSecurityService {
       return PinVerificationResult.locked(
         retryAfter: lockState.retryAfter ?? Duration.zero,
         failedAttempts: lockState.failedAttempts,
-        requiresMasterPassword: lockState.requiresMasterPassword,
-      );
-    }
-
-    final masterReauthRequired = await isMasterReauthRequired();
-    if (masterReauthRequired) {
-      return const PinVerificationResult.failure(
-        message:
-            'Guvenlik esigi asildi. PIN ile devam etmeden once master password ile dogrulama gerekir.',
-        requiresMasterPassword: true,
       );
     }
 
@@ -205,10 +170,8 @@ class PinSecurityService {
 
     final policy = await _readStoredPolicy();
     if (!_matchesStoredPolicyFormat(normalized, policy)) {
-      return PinVerificationResult.failure(
-        message: policy.legacyFormatAllowed
-            ? 'Legacy PIN 6-12 rakam olmalidir.'
-            : 'PIN tanimli politika ile uyusmuyor.',
+      return const PinVerificationResult.failure(
+        message: 'PIN tanimli politika ile uyusmuyor.',
       );
     }
 
@@ -231,19 +194,14 @@ class PinSecurityService {
       return PinVerificationResult.locked(
         retryAfter: protection.retryAfter,
         failedAttempts: protection.failedAttempts,
-        requiresMasterPassword: protection.requiresMasterPassword,
-        message: protection.requiresMasterPassword
-            ? 'Cok fazla hatali deneme. Master password ile giris yapin.'
-            : 'Cok fazla hatali deneme.',
+        message:
+            'Cok fazla deneme yapildi. ${PinVerificationResult._label(protection.retryAfter)} sonra tekrar deneyin.',
       );
     }
 
     return PinVerificationResult.failure(
-      message: protection.requiresMasterPassword
-          ? 'PIN hatali. Master password ile dogrulama onerilir.'
-          : 'PIN hatali.',
+      message: 'PIN hatali.',
       failedAttempts: protection.failedAttempts,
-      requiresMasterPassword: protection.requiresMasterPassword,
     );
   }
 
@@ -253,23 +211,12 @@ class PinSecurityService {
     await _secureStorage.delete(_pinIterationsKey);
     await _secureStorage.delete(_pinModeKey);
     await _secureStorage.delete(_pinPolicyVersionKey);
-    await _secureStorage.delete(_masterReauthRequiredKey);
     await resetProtectionState();
   }
 
   Future<void> resetProtectionState() async {
     await _secureStorage.delete(_failedAttemptKey);
     await _secureStorage.delete(_lockUntilEpochMsKey);
-    await _secureStorage.delete(_masterReauthRequiredKey);
-  }
-
-  Future<bool> isMasterReauthRequired() async {
-    final raw = await _secureStorage.read(_masterReauthRequiredKey);
-    return (raw ?? '').trim() == '1';
-  }
-
-  Future<void> clearMasterReauthRequirement() async {
-    await _secureStorage.delete(_masterReauthRequiredKey);
   }
 
   Future<void> migrateLegacyPin(String? legacyPin) async {
@@ -318,27 +265,27 @@ class PinSecurityService {
     final rawMode = await _secureStorage.read(_pinModeKey);
     final parsedMode = PinSecretModeStorage.parse(rawMode);
 
-    if (parsedVersion == null ||
-        parsedVersion < _currentPolicyVersion ||
-        parsedMode == null) {
+    if (parsedVersion == null || parsedMode == null) {
       return const _StoredPinPolicy.legacyNumeric();
     }
 
     return _StoredPinPolicy(
       version: parsedVersion,
       mode: parsedMode,
-      legacyFormatAllowed: false,
+      legacyFormatAllowed: parsedVersion < _currentPolicyVersion,
     );
   }
 
   bool _matchesStoredPolicyFormat(String pin, _StoredPinPolicy policy) {
-    if (policy.mode == PinSecretMode.numeric) {
-      if (policy.legacyFormatAllowed) {
-        return _legacyNumericPinPattern.hasMatch(pin);
-      }
-      return _numericPinPattern.hasMatch(pin);
+    if (policy.version >= _currentPolicyVersion) {
+      return _currentNumericPinPattern.hasMatch(pin);
     }
-    return _alphanumericAllowedPattern.hasMatch(pin) &&
+
+    if (policy.mode == PinSecretMode.numeric) {
+      return _legacyNumericPinPattern.hasMatch(pin);
+    }
+
+    return _legacyAlphanumericAllowedPattern.hasMatch(pin) &&
         _letterPattern.hasMatch(pin) &&
         _digitPattern.hasMatch(pin);
   }
@@ -353,8 +300,10 @@ class PinSecurityService {
     if (!isStrongPinCandidate(pin)) {
       return;
     }
-    final mode = inferMode(pin);
-    await _secureStorage.write(key: _pinModeKey, value: mode.storageValue);
+    await _secureStorage.write(
+      key: _pinModeKey,
+      value: PinSecretMode.numeric.storageValue,
+    );
     await _secureStorage.write(
       key: _pinPolicyVersionKey,
       value: '$_currentPolicyVersion',
@@ -365,28 +314,18 @@ class PinSecurityService {
     final lockUntilRaw = await _secureStorage.read(_lockUntilEpochMsKey);
     final lockUntilEpoch = int.tryParse((lockUntilRaw ?? '').trim()) ?? 0;
     final failedAttempts = await _readFailedAttemptCount();
-    final masterReauthRequired = await isMasterReauthRequired();
-    final requiresMaster =
-        failedAttempts >= _masterFallbackThreshold || masterReauthRequired;
     if (lockUntilEpoch <= 0) {
-      return _PinLockState.unlocked(
-        failedAttempts: failedAttempts,
-        requiresMasterPassword: requiresMaster,
-      );
+      return _PinLockState.unlocked(failedAttempts: failedAttempts);
     }
     final now = DateTime.now().millisecondsSinceEpoch;
     if (lockUntilEpoch <= now) {
       await _secureStorage.delete(_lockUntilEpochMsKey);
-      return _PinLockState.unlocked(
-        failedAttempts: failedAttempts,
-        requiresMasterPassword: requiresMaster,
-      );
+      return _PinLockState.unlocked(failedAttempts: failedAttempts);
     }
     final retryAfter = Duration(milliseconds: lockUntilEpoch - now);
     return _PinLockState.locked(
       retryAfter: retryAfter,
       failedAttempts: failedAttempts,
-      requiresMasterPassword: requiresMaster,
     );
   }
 
@@ -399,10 +338,6 @@ class PinSecurityService {
     final previous = await _readFailedAttemptCount();
     final nextFailed = previous + 1;
     await _secureStorage.write(key: _failedAttemptKey, value: '$nextFailed');
-    final requiresMaster = nextFailed >= _masterFallbackThreshold;
-    if (requiresMaster) {
-      await _secureStorage.write(key: _masterReauthRequiredKey, value: '1');
-    }
 
     final lockDuration = _lockDurationForAttempts(nextFailed);
     if (lockDuration > Duration.zero) {
@@ -415,7 +350,6 @@ class PinSecurityService {
         failedAttempts: nextFailed,
         isLocked: true,
         retryAfter: lockDuration,
-        requiresMasterPassword: requiresMaster,
       );
     }
 
@@ -423,7 +357,6 @@ class PinSecurityService {
       failedAttempts: nextFailed,
       isLocked: false,
       retryAfter: Duration.zero,
-      requiresMasterPassword: requiresMaster,
     );
   }
 
@@ -478,35 +411,6 @@ class PinSecurityService {
     return false;
   }
 
-  static bool _isWeakAlphanumericPattern(String pin) {
-    if (pin.isEmpty || _repeatedSinglePattern.hasMatch(pin)) {
-      return true;
-    }
-
-    final lower = pin.toLowerCase();
-    const blocked = <String>{
-      'password1',
-      'passroot1',
-      'qwerty123',
-      'admin1234',
-      'abc12345',
-      'letmein1',
-      'welcome1',
-    };
-    if (blocked.contains(lower)) {
-      return true;
-    }
-
-    if (lower.startsWith('1234') ||
-        lower.endsWith('1234') ||
-        lower.startsWith('abcd') ||
-        lower.endsWith('abcd')) {
-      return true;
-    }
-
-    return false;
-  }
-
   List<int> _generateSalt(int length) {
     final random = Random.secure();
     return List<int>.generate(length, (_) => random.nextInt(256));
@@ -530,7 +434,6 @@ class PinVerificationResult {
     required this.locked,
     required this.retryAfter,
     required this.failedAttempts,
-    required this.requiresMasterPassword,
     required this.message,
   });
 
@@ -540,34 +443,27 @@ class PinVerificationResult {
         locked: false,
         retryAfter: Duration.zero,
         failedAttempts: 0,
-        requiresMasterPassword: false,
         message: null,
       );
 
-  const PinVerificationResult.failure({
-    String? message,
-    int failedAttempts = 0,
-    bool requiresMasterPassword = false,
-  }) : this._(
-         success: false,
-         locked: false,
-         retryAfter: Duration.zero,
-         failedAttempts: failedAttempts,
-         requiresMasterPassword: requiresMasterPassword,
-         message: message,
-       );
+  const PinVerificationResult.failure({String? message, int failedAttempts = 0})
+    : this._(
+        success: false,
+        locked: false,
+        retryAfter: Duration.zero,
+        failedAttempts: failedAttempts,
+        message: message,
+      );
 
   const PinVerificationResult.locked({
     required Duration retryAfter,
     String? message,
     int failedAttempts = 0,
-    bool requiresMasterPassword = false,
   }) : this._(
          success: false,
          locked: true,
          retryAfter: retryAfter,
          failedAttempts: failedAttempts,
-         requiresMasterPassword: requiresMasterPassword,
          message: message,
        );
 
@@ -575,10 +471,11 @@ class PinVerificationResult {
   final bool locked;
   final Duration retryAfter;
   final int failedAttempts;
-  final bool requiresMasterPassword;
   final String? message;
 
-  String retryAfterLabel() {
+  String retryAfterLabel() => _label(retryAfter);
+
+  static String _label(Duration retryAfter) {
     final seconds = retryAfter.inSeconds;
     if (seconds <= 0) {
       return '0s';
@@ -604,34 +501,23 @@ class _PinLockState {
     required this.isLocked,
     required this.retryAfter,
     required this.failedAttempts,
-    required this.requiresMasterPassword,
   });
 
-  const _PinLockState.unlocked({
-    required int failedAttempts,
-    required bool requiresMasterPassword,
-  }) : this._(
-         isLocked: false,
-         retryAfter: null,
-         failedAttempts: failedAttempts,
-         requiresMasterPassword: requiresMasterPassword,
-       );
+  const _PinLockState.unlocked({required int failedAttempts})
+    : this._(isLocked: false, retryAfter: null, failedAttempts: failedAttempts);
 
   const _PinLockState.locked({
     required Duration retryAfter,
     required int failedAttempts,
-    required bool requiresMasterPassword,
   }) : this._(
          isLocked: true,
          retryAfter: retryAfter,
          failedAttempts: failedAttempts,
-         requiresMasterPassword: requiresMasterPassword,
        );
 
   final bool isLocked;
   final Duration? retryAfter;
   final int failedAttempts;
-  final bool requiresMasterPassword;
 }
 
 class _PinAttemptState {
@@ -639,13 +525,11 @@ class _PinAttemptState {
     required this.failedAttempts,
     required this.isLocked,
     required this.retryAfter,
-    required this.requiresMasterPassword,
   });
 
   final int failedAttempts;
   final bool isLocked;
   final Duration retryAfter;
-  final bool requiresMasterPassword;
 }
 
 class _StoredPinPolicy {

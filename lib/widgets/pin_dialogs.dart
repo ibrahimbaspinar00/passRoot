@@ -42,17 +42,15 @@ class PinDialogs {
                   ],
                   TextField(
                     controller: pinController,
-                    maxLength: PinSecurityService.maxAlphanumericLength,
-                    keyboardType: TextInputType.visiblePassword,
+                    maxLength: PinSecurityService.maxPinLength,
+                    keyboardType: TextInputType.number,
                     obscureText: hidePin,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
-                    ],
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     decoration: InputDecoration(
                       labelText: context.tr('Yeni PIN / Kod', 'New PIN / Code'),
                       helperText: context.tr(
-                        'Sayisal PIN (8-12) veya alfanumerik kod (8-24).',
-                        'Numeric PIN (8-12) or alphanumeric code (8-24).',
+                        'PIN 4 veya 6 hane olmalidir.',
+                        'PIN must be 4 or 6 digits.',
                       ),
                       errorText: errorText,
                       suffixIcon: IconButton(
@@ -71,12 +69,10 @@ class PinDialogs {
                   ),
                   TextField(
                     controller: repeatController,
-                    maxLength: PinSecurityService.maxAlphanumericLength,
-                    keyboardType: TextInputType.visiblePassword,
+                    maxLength: PinSecurityService.maxPinLength,
+                    keyboardType: TextInputType.number,
                     obscureText: hideRepeat,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
-                    ],
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     decoration: InputDecoration(
                       labelText: context.tr(
                         'PIN / Kod Tekrar',
@@ -153,7 +149,6 @@ class PinDialogs {
     final controller = TextEditingController();
     String? errorText;
     var hidden = true;
-    var requiresMasterFallback = false;
     final result = await showDialog<bool>(
       context: context,
       barrierDismissible: barrierDismissible,
@@ -164,10 +159,9 @@ class PinDialogs {
               final pin = controller.text.trim();
               if (!PinSecurityService.isPotentialUnlockInput(pin)) {
                 setDialogState(() {
-                  requiresMasterFallback = false;
                   errorText = context.tr(
-                    'PIN formati gecersiz. Sayisal PIN icin 8-12, alfanumerik kod icin 8-24 karakter kullanin.',
-                    'Invalid PIN format. Use 8-12 digits for numeric PIN or 8-24 alphanumeric characters.',
+                    'PIN formati gecersiz. PIN 4 veya 6 hane olmalidir.',
+                    'Invalid PIN format. PIN must be 4 or 6 digits.',
                   );
                 });
                 return;
@@ -180,17 +174,11 @@ class PinDialogs {
                 return;
               }
               setDialogState(() {
-                requiresMasterFallback = result.requiresMasterPassword;
                 if (result.locked) {
-                  errorText = result.requiresMasterPassword
-                      ? context.tr(
-                          'PIN gecici olarak kilitlendi. ${result.retryAfterLabel()} sonra tekrar deneyin veya master password ile devam edin.',
-                          'PIN is temporarily locked. Retry in ${result.retryAfterLabel()} or continue with master password.',
-                        )
-                      : context.tr(
-                          'Cok fazla deneme yapildi. ${result.retryAfterLabel()} sonra tekrar deneyin.',
-                          'Too many attempts. Try again in ${result.retryAfterLabel()}.',
-                        );
+                  errorText = context.tr(
+                    'Cok fazla deneme yapildi. ${result.retryAfterLabel()} sonra tekrar deneyin.',
+                    'Too many attempts. Try again in ${result.retryAfterLabel()}.',
+                  );
                   return;
                 }
                 errorText =
@@ -217,12 +205,10 @@ class PinDialogs {
                   ],
                   TextField(
                     controller: controller,
-                    maxLength: PinSecurityService.maxAlphanumericLength,
-                    keyboardType: TextInputType.visiblePassword,
+                    maxLength: PinSecurityService.maxPinLength,
+                    keyboardType: TextInputType.number,
                     obscureText: hidden,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
-                    ],
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     textInputAction: TextInputAction.done,
                     onSubmitted: (_) {
                       verifyNow();
@@ -233,8 +219,8 @@ class PinDialogs {
                         'PIN / Access Code',
                       ),
                       helperText: context.tr(
-                        'Sayisal PIN (8-12) veya alfanumerik kod (8-24).',
-                        'Numeric PIN (8-12) or alphanumeric code (8-24).',
+                        'PIN 4 veya 6 hane olmalidir.',
+                        'PIN must be 4 or 6 digits.',
                       ),
                       errorText: errorText,
                       suffixIcon: IconButton(
@@ -261,12 +247,7 @@ class PinDialogs {
                     },
                     child: Text(
                       forgotPinText ??
-                          (requiresMasterFallback
-                              ? context.tr(
-                                  'Master Password ile Devam Et',
-                                  'Continue with Master Password',
-                                )
-                              : context.tr('PIN\'i Unuttum', 'Forgot PIN')),
+                          context.tr('PIN\'i Unuttum', 'Forgot PIN'),
                     ),
                   ),
                 TextButton(

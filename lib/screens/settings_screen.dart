@@ -439,95 +439,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return result;
   }
 
-  Future<String?> _askMasterPassword({
-    required String title,
-    required String actionText,
-  }) async {
-    final controller = TextEditingController();
-    String? errorText;
-    var hidden = true;
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: Text(title),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: controller,
-                    obscureText: hidden,
-                    textInputAction: TextInputAction.done,
-                    onSubmitted: (_) {
-                      final value = controller.text.trim();
-                      if (value.length < 12) {
-                        setDialogState(() {
-                          errorText = context.tr(
-                            'Master password en az 12 karakter olmali.',
-                            'Master password must be at least 12 characters.',
-                          );
-                        });
-                        return;
-                      }
-                      Navigator.pop(context, value);
-                    },
-                    decoration: InputDecoration(
-                      labelText: context.tr(
-                        'Master Password',
-                        'Master Password',
-                      ),
-                      errorText: errorText,
-                      suffixIcon: IconButton(
-                        onPressed: () {
-                          setDialogState(() {
-                            hidden = !hidden;
-                          });
-                        },
-                        icon: Icon(
-                          hidden
-                              ? Icons.visibility_rounded
-                              : Icons.visibility_off_rounded,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(context.tr('Iptal', 'Cancel')),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final value = controller.text.trim();
-                    if (value.length < 12) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'Master password en az 12 karakter olmali.',
-                          'Master password must be at least 12 characters.',
-                        );
-                      });
-                      return;
-                    }
-                    Navigator.pop(context, value);
-                  },
-                  child: Text(actionText),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    controller.dispose();
-    return result;
-  }
-
   Future<bool> _reauthForSensitiveAction(String reason) async {
     if (widget.settingsStore.settings.biometricUnlockEnabled &&
         _biometricAvailable) {
@@ -555,25 +466,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
 
-    final master = await _askMasterPassword(
-      title: context.tr('Master Password Dogrulama', 'Verify Master Password'),
-      actionText: context.tr('Dogrula', 'Verify'),
+    _snack(
+      context.tr(
+        'PIN kullanilabilir degil. Lutfen uygulamayi yeniden baslatin veya guvenli geri yukleme yapin.',
+        'PIN is unavailable. Restart the app or perform secure recovery.',
+      ),
     );
-    if (master == null) {
-      return false;
-    }
-    final unlock = await widget.settingsStore.vaultKeyService
-        .unlockWithMasterPasswordDetailed(master);
-    if (!unlock.success && mounted) {
-      _snack(
-        unlock.message ??
-            context.tr(
-              'Master password dogrulanamadi.',
-              'Master password verification failed.',
-            ),
-      );
-    }
-    return unlock.success;
+    return false;
   }
 
   String _buildEncryptedEnvelope(String encryptedPayload) {
@@ -1188,8 +1087,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context,
       title: context.tr('Yeni Giris PIN\'i', 'New Access PIN'),
       description: context.tr(
-        'Yeni PIN, 8-12 sayisal veya en az bir harf + bir rakam iceren 8-24 karakter kod olmali.',
-        'New PIN must be 8-12 numeric or an 8-24 character code with at least one letter and one digit.',
+        'Yeni PIN 4 veya 6 hane sayisal olmalidir.',
+        'New PIN must be numeric and exactly 4 or 6 digits.',
       ),
       actionText: context.tr('PIN\'i Guncelle', 'Update PIN'),
     );
@@ -1230,20 +1129,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     if (!mounted) return;
 
-    final verified = await _reauthForSensitiveAction(
-      context.tr(
-        enabled
-            ? 'Uygulama kilidini etkinlestirmek icin kimlik dogrulayin.'
-            : 'Uygulama kilidini kapatmak icin kimlik dogrulayin.',
-        enabled
-            ? 'Verify identity to enable app lock.'
-            : 'Verify identity to disable app lock.',
-      ),
-    );
-    if (!verified) {
-      return;
-    }
-
     await widget.settingsStore.setAppLockEnabled(enabled);
     if (!mounted) return;
     _snack(
@@ -1273,20 +1158,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
     if (!mounted) return;
-
-    final verified = await _reauthForSensitiveAction(
-      context.tr(
-        enabled
-            ? 'Acilis kilidini etkinlestirmek icin kimlik dogrulayin.'
-            : 'Acilis kilidini kapatmak icin kimlik dogrulayin.',
-        enabled
-            ? 'Verify identity to enable launch lock.'
-            : 'Verify identity to disable launch lock.',
-      ),
-    );
-    if (!verified) {
-      return;
-    }
 
     await widget.settingsStore.setLockOnAppLaunch(enabled);
     if (!mounted) return;
@@ -1326,20 +1197,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     }
     if (!mounted) return;
-
-    final verified = await _reauthForSensitiveAction(
-      context.tr(
-        enabled
-            ? 'Arka plan donus kilidini etkinlestirmek icin kimlik dogrulayin.'
-            : 'Arka plan donus kilidini kapatmak icin kimlik dogrulayin.',
-        enabled
-            ? 'Verify identity to enable resume lock.'
-            : 'Verify identity to disable resume lock.',
-      ),
-    );
-    if (!verified) {
-      return;
-    }
 
     await widget.settingsStore.setLockOnAppResume(enabled);
     if (!mounted) return;
@@ -1578,16 +1435,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return;
       }
       if (!mounted) return;
-
-      final verified = await _reauthForSensitiveAction(
-        context.tr(
-          'Otomatik kilit suresini gevsetmek icin kimlik dogrulayin.',
-          'Verify identity to weaken auto lock timing.',
-        ),
-      );
-      if (!verified) {
-        return;
-      }
     }
 
     await widget.settingsStore.setAutoLockOption(selected);
@@ -1754,10 +1601,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   title: context.tr('Uygulama Kilidi', 'App Lock'),
                   subtitle: context.tr(
                     settings.appLockEnabled
-                        ? 'Acilista kimlik dogrulamasi aktiftir (master/PIN/biyometrik).'
+                        ? 'Acilista kimlik dogrulamasi aktiftir (PIN/biyometrik).'
                         : 'Kapaliysa uygulama acilisinda kilit uygulanmaz (onerilmez).',
                     settings.appLockEnabled
-                        ? 'Launch authentication is active (master/PIN/biometric).'
+                        ? 'Launch authentication is active (PIN/biometric).'
                         : 'If disabled, app starts without lock (not recommended).',
                   ),
                   value: settings.appLockEnabled,
@@ -1823,8 +1670,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           'PIN protection is active. Update it regularly.',
                         )
                       : context.tr(
-                          'PIN opsiyoneldir; hizli acilis icin etkinlestirebilirsiniz.',
-                          'PIN is optional; enable it for faster unlock.',
+                          'PIN henuz olusturulmadi. Guvenli erisim icin PIN olusturun.',
+                          'PIN is not created yet. Create PIN for secure access.',
                         ),
                   onTap: _ioBusy ? null : _managePin,
                 ),

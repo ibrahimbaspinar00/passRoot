@@ -6,10 +6,9 @@ import '../../l10n/lang_x.dart';
 import '../../services/pin_security_service.dart';
 
 class VaultCredentialSetupData {
-  const VaultCredentialSetupData({required this.masterPassword, this.pin});
+  const VaultCredentialSetupData({required this.pin});
 
-  final String masterPassword;
-  final String? pin;
+  final String pin;
 }
 
 class CreateVaultCredentialsScreen extends StatefulWidget {
@@ -31,22 +30,15 @@ class CreateVaultCredentialsScreen extends StatefulWidget {
 
 class _CreateVaultCredentialsScreenState
     extends State<CreateVaultCredentialsScreen> {
-  final _masterController = TextEditingController();
-  final _masterRepeatController = TextEditingController();
   final _pinController = TextEditingController();
   final _pinRepeatController = TextEditingController();
 
-  bool _masterHidden = true;
-  bool _masterRepeatHidden = true;
   bool _pinHidden = true;
   bool _pinRepeatHidden = true;
-  bool _enablePin = true;
   String? _localError;
 
   @override
   void dispose() {
-    _masterController.dispose();
-    _masterRepeatController.dispose();
     _pinController.dispose();
     _pinRepeatController.dispose();
     super.dispose();
@@ -55,58 +47,32 @@ class _CreateVaultCredentialsScreenState
   Future<void> _submit() async {
     if (widget.busy) return;
 
-    final master = _masterController.text.trim();
-    final masterRepeat = _masterRepeatController.text.trim();
-    if (master.length < 12) {
-      setState(() {
-        _localError = context.tr(
-          'Master password en az 12 karakter olmali.',
-          'Master password must be at least 12 characters.',
-        );
-      });
-      return;
-    }
-    if (master != masterRepeat) {
-      setState(() {
-        _localError = context.tr(
-          'Master password alanlari eslesmiyor.',
-          'Master password values do not match.',
-        );
-      });
-      return;
-    }
+    final pin = _pinController.text.trim();
+    final pinRepeat = _pinRepeatController.text.trim();
 
-    String? pin;
-    if (_enablePin) {
-      final value = _pinController.text.trim();
-      final repeat = _pinRepeatController.text.trim();
-      if (!PinSecurityService.isStrongPinCandidate(value)) {
-        setState(() {
-          _localError = context.tr(
-            PinSecurityService.enrollmentPolicyLabelTr(),
-            PinSecurityService.enrollmentPolicyLabelEn(),
-          );
-        });
-        return;
-      }
-      if (value != repeat) {
-        setState(() {
-          _localError = context.tr(
-            'PIN alanlari eslesmiyor.',
-            'PIN values do not match.',
-          );
-        });
-        return;
-      }
-      pin = value;
+    if (!PinSecurityService.isStrongPinCandidate(pin)) {
+      setState(() {
+        _localError = context.tr(
+          PinSecurityService.enrollmentPolicyLabelTr(),
+          PinSecurityService.enrollmentPolicyLabelEn(),
+        );
+      });
+      return;
+    }
+    if (pin != pinRepeat) {
+      setState(() {
+        _localError = context.tr(
+          'PIN alanlari eslesmiyor.',
+          'PIN values do not match.',
+        );
+      });
+      return;
     }
 
     setState(() {
       _localError = null;
     });
-    await widget.onSubmit(
-      VaultCredentialSetupData(masterPassword: master, pin: pin),
-    );
+    await widget.onSubmit(VaultCredentialSetupData(pin: pin));
   }
 
   @override
@@ -164,38 +130,38 @@ class _CreateVaultCredentialsScreenState
                           const SizedBox(height: 8),
                           Text(
                             context.tr(
-                              'Kasa anahtari master password ile korunur. Bu parola olmadan veriler cozumlenemez.',
-                              'Vault key is protected by a master password. Data cannot be decrypted without it.',
+                              'Uygulama cihazinizda guclu bir sifreleme anahtari olusturur ve guvenli depolamada saklar. Devam etmek icin sadece 4 veya 6 haneli PIN belirleyin.',
+                              'The app creates a strong encryption key on your device and stores it in secure storage. To continue, set a 4 or 6 digit PIN.',
                             ),
                             style: Theme.of(context).textTheme.bodyMedium
                                 ?.copyWith(color: pr.textMuted),
                           ),
                           const SizedBox(height: 14),
                           TextField(
-                            controller: _masterController,
-                            obscureText: _masterHidden,
-                            textInputAction: TextInputAction.next,
+                            controller: _pinController,
+                            maxLength: PinSecurityService.maxPinLength,
+                            keyboardType: TextInputType.number,
+                            obscureText: _pinHidden,
                             enabled: !widget.busy,
-                            autocorrect: false,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
                             decoration: InputDecoration(
-                              labelText: context.tr(
-                                'Master Password',
-                                'Master Password',
-                              ),
+                              labelText: context.tr('PIN', 'PIN'),
                               helperText: context.tr(
-                                'En az 12 karakter onerilir.',
-                                'Use at least 12 characters.',
+                                'Sadece 4 veya 6 hane kullanin.',
+                                'Use exactly 4 or 6 digits.',
                               ),
                               suffixIcon: IconButton(
                                 onPressed: widget.busy
                                     ? null
                                     : () {
                                         setState(() {
-                                          _masterHidden = !_masterHidden;
+                                          _pinHidden = !_pinHidden;
                                         });
                                       },
                                 icon: Icon(
-                                  _masterHidden
+                                  _pinHidden
                                       ? Icons.visibility_rounded
                                       : Icons.visibility_off_rounded,
                                 ),
@@ -204,126 +170,32 @@ class _CreateVaultCredentialsScreenState
                           ),
                           const SizedBox(height: 8),
                           TextField(
-                            controller: _masterRepeatController,
-                            obscureText: _masterRepeatHidden,
-                            textInputAction: TextInputAction.next,
+                            controller: _pinRepeatController,
+                            maxLength: PinSecurityService.maxPinLength,
+                            keyboardType: TextInputType.number,
+                            obscureText: _pinRepeatHidden,
                             enabled: !widget.busy,
-                            autocorrect: false,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
                             decoration: InputDecoration(
-                              labelText: context.tr(
-                                'Master Password Tekrar',
-                                'Repeat Master Password',
-                              ),
+                              labelText: context.tr('PIN Tekrar', 'Repeat PIN'),
                               suffixIcon: IconButton(
                                 onPressed: widget.busy
                                     ? null
                                     : () {
                                         setState(() {
-                                          _masterRepeatHidden =
-                                              !_masterRepeatHidden;
+                                          _pinRepeatHidden = !_pinRepeatHidden;
                                         });
                                       },
                                 icon: Icon(
-                                  _masterRepeatHidden
+                                  _pinRepeatHidden
                                       ? Icons.visibility_rounded
                                       : Icons.visibility_off_rounded,
                                 ),
                               ),
                             ),
                           ),
-                          const SizedBox(height: 8),
-                          SwitchListTile.adaptive(
-                            value: _enablePin,
-                            contentPadding: EdgeInsets.zero,
-                            title: Text(
-                              context.tr(
-                                'Hizli acilis icin PIN kullan',
-                                'Use PIN for quick unlock',
-                              ),
-                            ),
-                            subtitle: Text(
-                              context.tr(
-                                '8-12 sayisal PIN veya en az bir harf + bir rakam iceren 8-24 karakter kod kullanabilirsiniz.',
-                                'Use 8-12 numeric PIN or an 8-24 character code with at least one letter and one digit.',
-                              ),
-                            ),
-                            onChanged: widget.busy
-                                ? null
-                                : (value) {
-                                    setState(() {
-                                      _enablePin = value;
-                                    });
-                                  },
-                          ),
-                          if (_enablePin) ...[
-                            TextField(
-                              controller: _pinController,
-                              maxLength:
-                                  PinSecurityService.maxAlphanumericLength,
-                              keyboardType: TextInputType.visiblePassword,
-                              obscureText: _pinHidden,
-                              enabled: !widget.busy,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.allow(
-                                  RegExp(r'[A-Za-z0-9]'),
-                                ),
-                              ],
-                              decoration: InputDecoration(
-                                labelText: context.tr(
-                                  'PIN / Kod',
-                                  'PIN / Code',
-                                ),
-                                suffixIcon: IconButton(
-                                  onPressed: widget.busy
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _pinHidden = !_pinHidden;
-                                          });
-                                        },
-                                  icon: Icon(
-                                    _pinHidden
-                                        ? Icons.visibility_rounded
-                                        : Icons.visibility_off_rounded,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            TextField(
-                              controller: _pinRepeatController,
-                              maxLength:
-                                  PinSecurityService.maxAlphanumericLength,
-                              keyboardType: TextInputType.visiblePassword,
-                              obscureText: _pinRepeatHidden,
-                              enabled: !widget.busy,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.allow(
-                                  RegExp(r'[A-Za-z0-9]'),
-                                ),
-                              ],
-                              decoration: InputDecoration(
-                                labelText: context.tr(
-                                  'PIN / Kod Tekrar',
-                                  'Repeat PIN / Code',
-                                ),
-                                suffixIcon: IconButton(
-                                  onPressed: widget.busy
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _pinRepeatHidden =
-                                                !_pinRepeatHidden;
-                                          });
-                                        },
-                                  icon: Icon(
-                                    _pinRepeatHidden
-                                        ? Icons.visibility_rounded
-                                        : Icons.visibility_off_rounded,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
                           if ((mergedError ?? '').trim().isNotEmpty) ...[
                             const SizedBox(height: 8),
                             Container(
@@ -356,10 +228,7 @@ class _CreateVaultCredentialsScreenState
                                   )
                                 : const Icon(Icons.shield_rounded),
                             label: Text(
-                              context.tr(
-                                'Guvenli Kurulumu Tamamla',
-                                'Complete Secure Setup',
-                              ),
+                              context.tr('Kurulumu Tamamla', 'Complete Setup'),
                             ),
                           ),
                         ],

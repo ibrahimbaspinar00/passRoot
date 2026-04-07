@@ -7,11 +7,9 @@ import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
 import '../models/app_settings.dart';
 import '../models/vault_record.dart';
-import '../services/biometric_auth_service.dart';
 import '../state/app_settings_store.dart';
 import '../state/vault_store.dart';
 import '../utils/password_utils.dart';
-import '../widgets/pin_dialogs.dart';
 import '../widgets/vault_record_card.dart';
 
 class VaultScreen extends StatefulWidget {
@@ -47,12 +45,9 @@ class _VaultScreenState extends State<VaultScreen>
       <String, _SearchIndexData>{};
 
   Timer? _searchDebounceTimer;
-  late final BiometricAuthService _biometricAuthService;
-
   late final ValueNotifier<RecordCategory?> _selectedCategoryNotifier;
   late final ValueNotifier<String> _searchQueryNotifier;
   late final ValueNotifier<_VaultListState> _listStateNotifier;
-  bool _biometricAvailable = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -60,7 +55,6 @@ class _VaultScreenState extends State<VaultScreen>
   @override
   void initState() {
     super.initState();
-    _biometricAuthService = BiometricAuthService();
     _selectedCategoryNotifier = ValueNotifier<RecordCategory?>(null);
     _searchQueryNotifier = ValueNotifier<String>('');
     _listStateNotifier = ValueNotifier<_VaultListState>(
@@ -72,7 +66,6 @@ class _VaultScreenState extends State<VaultScreen>
     widget.store.addListener(_syncFromStores);
     widget.settingsStore.addListener(_syncFromStores);
     _scrollController.addListener(_onScroll);
-    unawaited(_loadBiometricAvailability());
     _syncFromStores(resetVisibleWindow: true);
   }
 
@@ -86,7 +79,6 @@ class _VaultScreenState extends State<VaultScreen>
     if (oldWidget.settingsStore != widget.settingsStore) {
       oldWidget.settingsStore.removeListener(_syncFromStores);
       widget.settingsStore.addListener(_syncFromStores);
-      unawaited(_loadBiometricAvailability());
     }
     _syncFromStores(resetVisibleWindow: true);
   }
@@ -156,158 +148,6 @@ class _VaultScreenState extends State<VaultScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _loadBiometricAvailability() async {
-    final available = await _biometricAuthService.canUseBiometrics();
-    if (!mounted) return;
-    setState(() {
-      _biometricAvailable = available;
-    });
-    if (!available && widget.settingsStore.settings.biometricUnlockEnabled) {
-      await widget.settingsStore.setBiometricUnlockEnabled(false);
-    }
-  }
-
-  Future<String?> _askMasterPassword() async {
-    final controller = TextEditingController();
-    String? errorText;
-    var hidden = true;
-
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: Text(
-                context.tr('Master Password Dogrulama', 'Verify Master Password'),
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    context.tr(
-                      'Bu islem icin master password girin.',
-                      'Enter master password for this action.',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: controller,
-                    obscureText: hidden,
-                    textInputAction: TextInputAction.done,
-                    onSubmitted: (_) {
-                      final value = controller.text.trim();
-                      if (value.length < 12) {
-                        setDialogState(() {
-                          errorText = context.tr(
-                            'Master password en az 12 karakter olmali.',
-                            'Master password must be at least 12 characters.',
-                          );
-                        });
-                        return;
-                      }
-                      Navigator.pop(context, value);
-                    },
-                    decoration: InputDecoration(
-                      labelText: context.tr('Master Password', 'Master Password'),
-                      errorText: errorText,
-                      suffixIcon: IconButton(
-                        onPressed: () {
-                          setDialogState(() {
-                            hidden = !hidden;
-                          });
-                        },
-                        icon: Icon(
-                          hidden
-                              ? Icons.visibility_rounded
-                              : Icons.visibility_off_rounded,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(context.tr('Iptal', 'Cancel')),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final value = controller.text.trim();
-                    if (value.length < 12) {
-                      setDialogState(() {
-                        errorText = context.tr(
-                          'Master password en az 12 karakter olmali.',
-                          'Master password must be at least 12 characters.',
-                        );
-                      });
-                      return;
-                    }
-                    Navigator.pop(context, value);
-                  },
-                  child: Text(context.tr('Dogrula', 'Verify')),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    controller.dispose();
-    return result;
-  }
-
-  Future<bool> _reauthForRecordDelete() async {
-    final settings = widget.settingsStore.settings;
-    if (settings.biometricUnlockEnabled && _biometricAvailable) {
-      final biometricOk = await _biometricAuthService.authenticate(
-        reason: context.tr(
-          'Kayit silme islemi icin biyometrik dogrulama yapin.',
-          'Authenticate biometrically to delete this record.',
-        ),
-      );
-      if (biometricOk) {
-        return true;
-      }
-    }
-
-    await widget.settingsStore.refreshPinAvailability(notify: false);
-    if (!mounted) {
-      return false;
-    }
-
-    if (widget.settingsStore.pinAvailable) {
-      return PinDialogs.verifyPin(
-        context: context,
-        onVerify: widget.settingsStore.vaultKeyService.unlockWithPin,
-        title: context.tr('Guvenlik Dogrulamasi', 'Security Verification'),
-        description: context.tr(
-          'Kaydi silmek icin PIN girin.',
-          'Enter PIN to delete this record.',
-        ),
-      );
-    }
-
-    final masterPassword = await _askMasterPassword();
-    if (masterPassword == null) {
-      return false;
-    }
-    final unlock = await widget.settingsStore.vaultKeyService
-        .unlockWithMasterPasswordDetailed(masterPassword);
-    if (!unlock.success && mounted) {
-      _snack(
-        unlock.message ??
-            context.tr(
-              'Master password dogrulanamadi.',
-              'Master password verification failed.',
-            ),
-      );
-    }
-    return unlock.success;
-  }
-
   Future<bool> _confirmDeleteRecord(VaultRecord record) async {
     final titleText = record.title.trim().isEmpty
         ? context.tr('Secili kayit', 'selected record')
@@ -324,8 +164,8 @@ class _VaultScreenState extends State<VaultScreen>
           ),
           content: Text(
             context.tr(
-              '"$titleText" kaydi silinecek. Devam etmeden once kimlik dogrulamasi istenir. Silme sonrasi kisa sureli geri alma sunulur.',
-              '"$titleText" will be deleted. Identity verification is required before continuing. A short undo window will be available after deletion.',
+              '"$titleText" kaydi silinecek. Silme sonrasi kisa sureli geri alma sunulur.',
+              '"$titleText" will be deleted. A short undo window will be available after deletion.',
             ),
           ),
           actions: [
@@ -339,9 +179,7 @@ class _VaultScreenState extends State<VaultScreen>
                 foregroundColor: Theme.of(context).colorScheme.onError,
               ),
               onPressed: () => Navigator.pop(context, true),
-              child: Text(
-                context.tr('Sil ve Dogrula', 'Delete & Verify'),
-              ),
+              child: Text(context.tr('Sil ve Dogrula', 'Delete & Verify')),
             ),
           ],
         );
@@ -358,9 +196,7 @@ class _VaultScreenState extends State<VaultScreen>
     try {
       await widget.store.addRecord(record.copyWith(updatedAt: DateTime.now()));
       if (!mounted) return;
-      _snack(
-        context.tr('Kayit geri yuklendi.', 'Record restored.'),
-      );
+      _snack(context.tr('Kayit geri yuklendi.', 'Record restored.'));
     } on VaultStoreException catch (error) {
       _snack(error.message);
     }
@@ -369,11 +205,6 @@ class _VaultScreenState extends State<VaultScreen>
   Future<void> _deleteRecordWithProtection(VaultRecord record) async {
     final confirmed = await _confirmDeleteRecord(record);
     if (!confirmed) {
-      return;
-    }
-
-    final verified = await _reauthForRecordDelete();
-    if (!verified) {
       return;
     }
 

@@ -30,7 +30,6 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
   bool _busy = false;
   bool _hidden = true;
   String? _errorText;
-  bool _requiresMasterFallback = false;
 
   @override
   void initState() {
@@ -50,10 +49,9 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
     if (!PinSecurityService.isPotentialUnlockInput(pin)) {
       setState(() {
         _errorText = context.tr(
-          'PIN formati gecersiz. Sayisal PIN icin 8-12, alfanumerik kod icin 8-24 karakter kullanin.',
-          'Invalid PIN format. Use 8-12 digits for numeric PIN or 8-24 alphanumeric characters.',
+          'PIN formati gecersiz. PIN 4 veya 6 hane olmalidir.',
+          'Invalid PIN format. PIN must be 4 or 6 digits.',
         );
-        _requiresMasterFallback = false;
       });
       return;
     }
@@ -61,7 +59,6 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
     setState(() {
       _busy = true;
       _errorText = null;
-      _requiresMasterFallback = false;
     });
     final result = await widget.onVerifyPin(pin);
     if (!mounted) return;
@@ -71,17 +68,11 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
     }
     setState(() {
       _busy = false;
-      _requiresMasterFallback = result.requiresMasterPassword;
       if (result.locked) {
-        _errorText = result.requiresMasterPassword
-            ? context.tr(
-                'Guvenlik nedeniyle PIN gecici olarak kilitlendi. ${result.retryAfterLabel()} sonra tekrar deneyin veya master password ile giris yapin.',
-                'PIN is temporarily locked for security. Retry in ${result.retryAfterLabel()} or continue with master password.',
-              )
-            : context.tr(
-                'Cok fazla deneme yapildi. ${result.retryAfterLabel()} sonra tekrar deneyin.',
-                'Too many attempts. Try again in ${result.retryAfterLabel()}.',
-              );
+        _errorText = context.tr(
+          'Cok fazla deneme yapildi. ${result.retryAfterLabel()} sonra tekrar deneyin.',
+          'Too many attempts. Try again in ${result.retryAfterLabel()}.',
+        );
         return;
       }
       _errorText =
@@ -129,12 +120,10 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                   const SizedBox(height: 12),
                   TextField(
                     controller: _pinController,
-                    maxLength: PinSecurityService.maxAlphanumericLength,
-                    keyboardType: TextInputType.visiblePassword,
+                    maxLength: PinSecurityService.maxPinLength,
+                    keyboardType: TextInputType.number,
                     obscureText: _hidden,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
-                    ],
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     textInputAction: TextInputAction.done,
                     onSubmitted: (_) {
                       _verify();
@@ -145,8 +134,8 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                         'PIN / Access Code',
                       ),
                       helperText: context.tr(
-                        'Sayisal PIN (8-12) veya alfanumerik kod (8-24) kullanabilirsiniz.',
-                        'Use numeric PIN (8-12) or alphanumeric code (8-24).',
+                        'PIN 4 veya 6 hane olmalidir.',
+                        'PIN must be 4 or 6 digits.',
                       ),
                       errorText: _errorText,
                       suffixIcon: IconButton(
@@ -173,16 +162,12 @@ class _PinLoginScreenState extends State<PinLoginScreen> {
                         onPressed: _busy
                             ? null
                             : () async {
+                                final navigator = Navigator.of(context);
                                 await widget.onForgotPin!.call();
+                                if (!navigator.mounted) return;
+                                navigator.pop();
                               },
-                        child: Text(
-                          _requiresMasterFallback
-                              ? context.tr(
-                                  'Master Password ile Giris Yap',
-                                  'Continue with Master Password',
-                                )
-                              : context.tr('PIN\'i Unuttum', 'Forgot PIN'),
-                        ),
+                        child: Text(context.tr('PIN\'i Unuttum', 'Forgot PIN')),
                       ),
                     ),
                     const SizedBox(height: 4),

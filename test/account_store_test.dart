@@ -199,6 +199,59 @@ void main() {
     expect(store.hasRegisteredAccount, isFalse);
     expect(store.isSignedIn, isFalse);
   });
+
+  test('rejects password shorter than 6 characters', () async {
+    final store = AccountStore(secureStorageService: fakeStorage);
+    await store.load();
+
+    expect(
+      () => store.register(
+        username: 'Short',
+        email: 'short@example.com',
+        password: 'Ab1!',
+      ),
+      throwsA(
+        isA<AccountOperationException>().having(
+          (error) => error.message,
+          'message',
+          contains('Sifre en az 6 karakter olmali'),
+        ),
+      ),
+    );
+  });
+
+  test(
+    'accepts 6+ password variants and keeps PIN/password model separate',
+    () async {
+      final store = AccountStore(secureStorageService: fakeStorage);
+      await store.load();
+
+      await store.register(
+        username: 'Letters',
+        email: 'letters@example.com',
+        password: 'abcdef',
+      );
+      await store.signOut();
+      await store.signIn(email: 'letters@example.com', password: 'abcdef');
+      expect(store.isSignedIn, isTrue);
+
+      await store.changePassword(
+        currentPassword: 'abcdef',
+        newPassword: 'abc123',
+      );
+      await store.signOut();
+      await store.signIn(email: 'letters@example.com', password: 'abc123');
+      expect(store.isSignedIn, isTrue);
+
+      await store.changePassword(
+        currentPassword: 'abc123',
+        newPassword: 'abc@12',
+      );
+      await store.signOut();
+      await store.signIn(email: 'letters@example.com', password: 'abc@12');
+      expect(store.isSignedIn, isTrue);
+    },
+  );
 }
 
 Future<List<int>> _hashPassword({

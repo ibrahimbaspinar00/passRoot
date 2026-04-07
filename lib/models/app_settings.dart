@@ -293,7 +293,6 @@ class AppSettings {
       'lockOnAppLaunch': lockOnAppLaunch,
       'lockOnAppResume': lockOnAppResume,
       'pinEnabled': pinEnabled,
-      'pinCode': pinCode,
       'biometricUnlockEnabled': biometricUnlockEnabled,
       'autoLockOption': autoLockOption.name,
       'language': language.name,

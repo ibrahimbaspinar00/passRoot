@@ -111,6 +111,7 @@ class GoogleAuthStatusCard extends StatelessWidget {
               description: signedOutDescription,
               loading: authStore.isBusy,
               guestHint: guestHint,
+              errorMessage: authStore.lastErrorMessage,
               syncStatus: syncStatus,
               onSignIn: () => _handleSignIn(context),
             ),
@@ -124,6 +125,7 @@ class _SignedOutContent extends StatelessWidget {
     required this.description,
     required this.loading,
     required this.guestHint,
+    required this.errorMessage,
     required this.syncStatus,
     required this.onSignIn,
   });
@@ -132,6 +134,7 @@ class _SignedOutContent extends StatelessWidget {
   final String description;
   final bool loading;
   final String? guestHint;
+  final String? errorMessage;
   final CloudSyncStatus syncStatus;
   final VoidCallback onSignIn;
 
@@ -214,6 +217,24 @@ class _SignedOutContent extends StatelessWidget {
             style: textTheme.bodySmall?.copyWith(
               color: pr.textMuted.withValues(alpha: 0.92),
               fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+        if ((errorMessage ?? '').trim().isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: scheme.errorContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              errorMessage!,
+              style: textTheme.bodySmall?.copyWith(
+                color: scheme.onErrorContainer,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],
@@ -350,21 +371,21 @@ class _SignedInContent extends StatelessWidget {
 String _syncStatusLabel(BuildContext context, CloudSyncStatus status) {
   return switch (status) {
     CloudSyncStatus.disconnected => context.tr(
-        'Bulut Senk.: Bagli degil',
-        'Cloud Sync: Disconnected',
-      ),
+      'Bulut Senk.: Bagli degil',
+      'Cloud Sync: Disconnected',
+    ),
     CloudSyncStatus.unavailable => context.tr(
-        'Bulut Senk.: Aktif degil',
-        'Cloud Sync: Inactive',
-      ),
+      'Bulut Senk.: Aktif degil',
+      'Cloud Sync: Inactive',
+    ),
     CloudSyncStatus.active => context.tr(
-        'Bulut Senk.: Aktif',
-        'Cloud Sync: Active',
-      ),
+      'Bulut Senk.: Aktif',
+      'Cloud Sync: Active',
+    ),
     CloudSyncStatus.error => context.tr(
-        'Bulut Senk.: Hata',
-        'Cloud Sync: Error',
-      ),
+      'Bulut Senk.: Hata',
+      'Cloud Sync: Error',
+    ),
   };
 }
 

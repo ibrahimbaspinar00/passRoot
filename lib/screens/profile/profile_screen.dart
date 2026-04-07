@@ -191,6 +191,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     obscureText: hidden,
                     decoration: InputDecoration(
                       labelText: context.tr('Mevcut Şifre', 'Current Password'),
+                      helperText: context.tr(
+                        'Sifre en az 6 karakter olmalidir.',
+                        'Password must be at least 6 characters.',
+                      ),
                       suffixIcon: IconButton(
                         onPressed: () {
                           setState(() {
@@ -788,6 +792,10 @@ class _SignInScreenState extends State<_SignInScreen> {
             onSubmitted: (_) => _submit(),
             decoration: InputDecoration(
               labelText: context.tr('Şifre', 'Password'),
+              helperText: context.tr(
+                'Sifre en az 6 karakter olmalidir. Harf, rakam ve ozel karakter kullanabilirsiniz.',
+                'Password must be at least 6 characters. You can use letters, numbers, and symbols.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {
@@ -944,6 +952,10 @@ class _RegisterScreenState extends State<_RegisterScreen> {
             textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: context.tr('Şifre', 'Password'),
+              helperText: context.tr(
+                'Sifre en az 6 karakter olmalidir. Harf, rakam ve ozel karakter kullanabilirsiniz.',
+                'Password must be at least 6 characters. You can use letters, numbers, and symbols.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {
@@ -965,6 +977,10 @@ class _RegisterScreenState extends State<_RegisterScreen> {
             textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: context.tr('Şifre Tekrar', 'Repeat Password'),
+              helperText: context.tr(
+                'Kayit sifresi en az 6 karakter olmalidir.',
+                'Account password must be at least 6 characters.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {
@@ -1255,6 +1271,10 @@ class _ChangeEmailScreenState extends State<_ChangeEmailScreen> {
             onSubmitted: (_) => _submit(),
             decoration: InputDecoration(
               labelText: context.tr('Mevcut Şifre', 'Current Password'),
+              helperText: context.tr(
+                'Sifre en az 6 karakter olmalidir.',
+                'Password must be at least 6 characters.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {
@@ -1403,6 +1423,10 @@ class _ChangePasswordScreenState extends State<_ChangePasswordScreen> {
             textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: context.tr('Mevcut Şifre', 'Current Password'),
+              helperText: context.tr(
+                'Sifre en az 6 karakter olmalidir.',
+                'Password must be at least 6 characters.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {
@@ -1424,6 +1448,10 @@ class _ChangePasswordScreenState extends State<_ChangePasswordScreen> {
             textInputAction: TextInputAction.next,
             decoration: InputDecoration(
               labelText: context.tr('Yeni Şifre', 'New Password'),
+              helperText: context.tr(
+                'Sifre en az 6 karakter olmalidir. Harf, rakam ve ozel karakter kullanabilirsiniz.',
+                'Password must be at least 6 characters. You can use letters, numbers, and symbols.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {
@@ -1446,6 +1474,10 @@ class _ChangePasswordScreenState extends State<_ChangePasswordScreen> {
             onSubmitted: (_) => _submit(),
             decoration: InputDecoration(
               labelText: context.tr('Yeni Şifre Tekrar', 'Repeat New Password'),
+              helperText: context.tr(
+                'Yeni sifre en az 6 karakter olmalidir.',
+                'New password must be at least 6 characters.',
+              ),
               suffixIcon: IconButton(
                 onPressed: () {
                   setState(() {

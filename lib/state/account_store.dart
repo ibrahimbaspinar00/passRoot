@@ -691,8 +691,10 @@ class AccountStore extends ChangeNotifier {
 
   String _normalizePassword(String value) {
     final normalized = value.trim();
-    if (normalized.length < 8) {
-      throw const AccountOperationException('Sifre en az 8 karakter olmali.');
+    if (normalized.length < 6) {
+      throw const AccountOperationException(
+        'Sifre en az 6 karakter olmali. Harf, rakam ve ozel karakter kullanabilirsiniz.',
+      );
     }
     return normalized;
   }

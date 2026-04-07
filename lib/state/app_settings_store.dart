@@ -187,6 +187,14 @@ class AppSettingsStore extends ChangeNotifier {
     );
   }
 
+  Future<void> resetAfterVaultReset() async {
+    _settings = const AppSettings();
+    _pinAvailable = false;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_storageKey);
+    notifyListeners();
+  }
+
   Future<void> _update(AppSettings value) async {
     _settings = value;
     await _ensureLockConfigurationConsistency();

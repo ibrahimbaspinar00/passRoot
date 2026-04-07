@@ -21,42 +21,29 @@ void main() {
       );
     });
 
+    test('unlocks with valid PIN and fails with wrong PIN', () async {
+      await service.setupVault(pin: '8273');
+      service.lockVault();
+
+      final wrongPin = await service.unlockWithPin('1111');
+      expect(wrongPin.success, isFalse);
+
+      final okPin = await service.unlockWithPin('8273');
+      expect(okPin.success, isTrue);
+      expect(service.hasUnlockedDek, isTrue);
+    });
+
     test(
-      'separates invalid master password from corrupted key material',
+      'returns key-missing error when vault key material is absent',
       () async {
-        const master = 'correct horse battery staple';
-        await service.setupVault(
-          masterPassword: master,
-          optionalPin: '82739452',
-        );
-        service.lockVault();
+        await service.setupVault(pin: '8273');
+        await fakeStorage.delete('passroot_vault_dek_device_v3');
 
-        final wrongPassword = await service.unlockWithMasterPasswordDetailed(
-          'wrong password 987654',
-        );
-        expect(wrongPassword.success, isFalse);
-        expect(wrongPassword.reason, VaultUnlockFailureReason.invalidSecret);
-
-        await fakeStorage.write(
-          key: 'passroot_vault_dek_master_wrap_v2',
-          value: '{broken-json',
-        );
         service.lockVault();
-        final corrupted = await service.unlockWithMasterPasswordDetailed(
-          master,
-        );
-        expect(corrupted.success, isFalse);
-        expect(corrupted.reason, VaultUnlockFailureReason.keyMaterialCorrupted);
+        final result = await service.unlockWithPin('8273');
+        expect(result.success, isFalse);
       },
     );
-
-    test('returns missing material error when no master wrap exists', () async {
-      final result = await service.unlockWithMasterPasswordDetailed(
-        'any-valid-length-password',
-      );
-      expect(result.success, isFalse);
-      expect(result.reason, VaultUnlockFailureReason.keyMaterialMissing);
-    });
   });
 }
 

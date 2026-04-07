@@ -1,12 +1,17 @@
 import '../state/app_settings_store.dart';
+import '../services/biometric_auth_service.dart';
 import '../services/pin_security_service.dart';
 import '../services/vault_key_service.dart';
 
 class SecurityService {
-  SecurityService({VaultKeyService? vaultKeyService})
-    : _vaultKeyService = vaultKeyService ?? VaultKeyService();
+  SecurityService({
+    VaultKeyService? vaultKeyService,
+    BiometricAuthService? biometricAuthService,
+  }) : _vaultKeyService = vaultKeyService ?? VaultKeyService(),
+       _biometricAuthService = biometricAuthService ?? BiometricAuthService();
 
   final VaultKeyService _vaultKeyService;
+  final BiometricAuthService _biometricAuthService;
 
   Future<void> prepare(AppSettingsStore settingsStore) async {
     await settingsStore.refreshPinAvailability(notify: false);
@@ -27,12 +32,15 @@ class SecurityService {
     return _vaultKeyService.unlockWithPin(pin);
   }
 
-  Future<VaultUnlockResult> verifyMasterPasswordDetailed(String masterPassword) {
-    return _vaultKeyService.unlockWithMasterPasswordDetailed(masterPassword);
-  }
-
-  Future<bool> verifyMasterPassword(String masterPassword) {
-    return _vaultKeyService.unlockWithMasterPassword(masterPassword);
+  Future<bool> unlockWithBiometric({required String reason}) async {
+    final biometricResult = await _biometricAuthService.authenticateDetailed(
+      reason: reason,
+    );
+    if (!biometricResult.success) {
+      return false;
+    }
+    await _vaultKeyService.unlockWithBiometricSession();
+    return true;
   }
 
   void lockVault() {

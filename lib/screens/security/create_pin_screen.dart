@@ -143,8 +143,8 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           const SizedBox(height: 8),
                           Text(
                             context.tr(
-                              'Bu uygulama hassas veri saklar. Sayisal PIN icin 8-12 hane, alfanumerik kod icin en az bir harf + bir rakam ile 8-24 karakter kullanin.',
-                              'This app stores sensitive data. Use 8-12 digits for numeric PIN or 8-24 alphanumeric characters with at least one letter and one digit.',
+                              'Bu uygulama hassas veri saklar. PIN sadece 4 veya 6 hane olmalidir.',
+                              'This app stores sensitive data. PIN must be 4 or 6 digits.',
                             ),
                             style: theme.textTheme.bodyMedium?.copyWith(
                               color: pr.textMuted,
@@ -154,14 +154,12 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           const SizedBox(height: 14),
                           TextField(
                             controller: _pinController,
-                            maxLength: PinSecurityService.maxAlphanumericLength,
-                            keyboardType: TextInputType.visiblePassword,
+                            maxLength: PinSecurityService.maxPinLength,
+                            keyboardType: TextInputType.number,
                             obscureText: _pinHidden,
                             enabled: !widget.busy,
                             inputFormatters: [
-                              FilteringTextInputFormatter.allow(
-                                RegExp(r'[A-Za-z0-9]'),
-                              ),
+                              FilteringTextInputFormatter.digitsOnly,
                             ],
                             decoration: InputDecoration(
                               labelText: context.tr(
@@ -186,14 +184,12 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                           ),
                           TextField(
                             controller: _repeatController,
-                            maxLength: PinSecurityService.maxAlphanumericLength,
-                            keyboardType: TextInputType.visiblePassword,
+                            maxLength: PinSecurityService.maxPinLength,
+                            keyboardType: TextInputType.number,
                             obscureText: _repeatHidden,
                             enabled: !widget.busy,
                             inputFormatters: [
-                              FilteringTextInputFormatter.allow(
-                                RegExp(r'[A-Za-z0-9]'),
-                              ),
+                              FilteringTextInputFormatter.digitsOnly,
                             ],
                             decoration: InputDecoration(
                               labelText: context.tr(

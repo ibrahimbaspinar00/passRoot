@@ -14,27 +14,27 @@ void main() {
     });
 
     test('sets and verifies valid numeric pin', () async {
-      await service.setPin('82739452');
+      await service.setPin('8273');
 
       expect(await service.hasPin(), isTrue);
-      expect(await service.verifyPin('82739452'), isTrue);
-      expect(await service.verifyPin('11111111'), isFalse);
+      expect(await service.verifyPin('8273'), isTrue);
+      expect(await service.verifyPin('1111'), isFalse);
     });
 
-    test('supports alphanumeric pin policy', () async {
-      await service.setPin('A82c7394');
+    test('supports 6-digit policy', () async {
+      await service.setPin('827394');
 
       expect(await service.hasPin(), isTrue);
-      expect(await service.verifyPin('A82c7394'), isTrue);
-      expect(await service.verifyPin('A82c7395'), isFalse);
+      expect(await service.verifyPin('827394'), isTrue);
+      expect(await service.verifyPin('827395'), isFalse);
     });
 
     test('applies lock after repeated failures', () async {
-      await service.setPin('82739452');
+      await service.setPin('8273');
 
-      final first = await service.verifyPinDetailed('11111111');
-      final second = await service.verifyPinDetailed('11111111');
-      final third = await service.verifyPinDetailed('11111111');
+      final first = await service.verifyPinDetailed('1111');
+      final second = await service.verifyPinDetailed('1111');
+      final third = await service.verifyPinDetailed('1111');
 
       expect(first.locked, isFalse);
       expect(second.locked, isFalse);
@@ -42,54 +42,38 @@ void main() {
       expect(third.retryAfter, isNot(Duration.zero));
     });
 
-    test('critical threshold requires master fallback', () async {
-      await service.setPin('82739452');
+    test('failed attempts increase lock severity', () async {
+      await service.setPin('8273');
 
       PinVerificationResult result = const PinVerificationResult.failure();
       for (var i = 0; i < 8; i++) {
-        result = await service.verifyPinDetailed('11111111');
+        result = await service.verifyPinDetailed('1111');
         await fakeStorage.delete('passroot_pin_lock_until_v1');
       }
 
       expect(result.failedAttempts, 8);
-      expect(result.requiresMasterPassword, isTrue);
-    });
-
-    test('master reauth gate blocks pin until cleared', () async {
-      await service.setPin('82739452');
-      for (var i = 0; i < 8; i++) {
-        await service.verifyPinDetailed('11111111');
-        await fakeStorage.delete('passroot_pin_lock_until_v1');
-      }
-
-      final blocked = await service.verifyPinDetailed('82739452');
-      expect(blocked.success, isFalse);
-      expect(blocked.requiresMasterPassword, isTrue);
-
-      await service.clearMasterReauthRequirement();
-      final unlocked = await service.verifyPinDetailed('82739452');
-      expect(unlocked.success, isTrue);
+      expect(result.locked, isTrue);
     });
 
     test('successful verify resets protection counters', () async {
-      await service.setPin('82739452');
-      await service.verifyPinDetailed('11111111');
-      await service.verifyPinDetailed('11111111');
+      await service.setPin('8273');
+      await service.verifyPinDetailed('1111');
+      await service.verifyPinDetailed('1111');
 
-      final success = await service.verifyPinDetailed('82739452');
-      final nextFailure = await service.verifyPinDetailed('11111111');
+      final success = await service.verifyPinDetailed('8273');
+      final nextFailure = await service.verifyPinDetailed('1111');
 
       expect(success.success, isTrue);
       expect(nextFailure.locked, isFalse);
       expect(nextFailure.failedAttempts, 1);
     });
 
-    test('migrates only policy-compliant legacy pin values', () async {
-      await service.migrateLegacyPin('82739452');
+    test('migrates only policy-compliant 4/6 pin values', () async {
+      await service.migrateLegacyPin('8273');
       expect(await service.hasPin(), isTrue);
 
       await service.clearPin();
-      await service.migrateLegacyPin('827394');
+      await service.migrateLegacyPin('82739');
       expect(await service.hasPin(), isFalse);
     });
   });
