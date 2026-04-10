@@ -23,6 +23,7 @@ import '../state/google_auth_store.dart';
 import '../state/vault_store.dart';
 import '../utils/app_logger.dart';
 import '../widgets/google_auth_status_card.dart';
+import '../widgets/passroot_logo.dart';
 import '../widgets/pin_dialogs.dart';
 import '../widgets/settings_section_card.dart';
 
@@ -1452,7 +1453,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       applicationName: 'PassRoot Vault',
       applicationVersion: _appVersion,
-      applicationIcon: const Icon(Icons.lock_person_rounded),
+      applicationIcon: const PassRootLogo(size: 36),
       children: [
         Text(
           context.tr(

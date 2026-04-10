@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app/app_theme.dart';
 import '../l10n/lang_x.dart';
+import '../widgets/passroot_logo.dart';
 
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
@@ -9,7 +10,6 @@ class SplashScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pr = context.pr;
-    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: DecoratedBox(
         decoration: BoxDecoration(
@@ -44,11 +44,7 @@ class SplashScreen extends StatelessWidget {
                     color: pr.accentSoft,
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Icon(
-                    Icons.shield_rounded,
-                    size: 30,
-                    color: scheme.primary,
-                  ),
+                  child: const Center(child: PassRootLogo(size: 40)),
                 ),
                 const SizedBox(height: 12),
                 Text(

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../app/app_theme.dart';
 import '../../l10n/lang_x.dart';
 import '../../services/pin_security_service.dart';
+import '../../widgets/passroot_logo.dart';
 
 class CreatePinScreen extends StatefulWidget {
   const CreatePinScreen({
@@ -124,11 +125,7 @@ class _CreatePinScreenState extends State<CreatePinScreen> {
                               color: pr.accentSoft,
                               borderRadius: BorderRadius.circular(20),
                             ),
-                            child: Icon(
-                              Icons.shield_rounded,
-                              size: 36,
-                              color: scheme.primary,
-                            ),
+                            child: const Center(child: PassRootLogo(size: 48)),
                           ),
                           const SizedBox(height: 16),
                           Text(
